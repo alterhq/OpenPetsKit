@@ -125,7 +125,7 @@ Use a custom socket only when you intentionally need isolation, such as:
 CLI host example:
 
 ```sh
-swift run openpets run --pet Sources/OpenPets/Resources/Pets/starcorn --socket /tmp/openpets-dev.sock
+swift run openpets run --pet /path/to/starcorn --socket /tmp/openpets-dev.sock
 swift run openpets notify --socket /tmp/openpets-dev.sock --title "Dev Pet" --status message --text "This targets the dev socket."
 ```
 
