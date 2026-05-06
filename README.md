@@ -1,6 +1,8 @@
 # OpenPetsKit
 
-OpenPetsKit is the embeddable Swift runtime for OpenPets. It lets macOS apps load a bundled sample pet, host the desktop pet UI, and send pet commands through the shared local socket without depending on the OpenPets desktop app, MCP server, Sparkle, SwiftNIO, or the MCP Swift SDK.
+OpenPetsKit is the embeddable Swift runtime for OpenPets. It lets macOS apps load a bundled sample pet, host the desktop pet UI, and send pet commands through the shared local socket without depending on the OpenPets desktop app.
+
+For the desktop app, MCP server, and user-facing project, see [openpets.sh](https://openpets.sh) and the [OpenPets desktop GitHub repository](https://github.com/alterhq/openpets).
 
 ## Installation
 
