@@ -789,6 +789,10 @@ final class OpenPetsTests: XCTestCase {
             mcpHost: "0.0.0.0",
             mcpPort: 3999,
             mcpEndpoint: "/custom-mcp",
+            petScalesByID: [
+                "small-pet": 0.5,
+                "large-pet": 1.75
+            ],
             disabledPluginIDs: ["openpets.plugin.claude-code"]
         )
 
@@ -811,6 +815,7 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(configuration.mcpPort, 3001)
         XCTAssertEqual(configuration.mcpEndpoint, "/mcp")
         XCTAssertEqual(configuration.activePetID, OpenPetsBundledPets.starcornID)
+        XCTAssertEqual(configuration.petScalesByID, [:])
         XCTAssertEqual(configuration.disabledPluginIDs, [])
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
     }
@@ -836,7 +841,27 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(configuration.mcpPort, 3001)
         XCTAssertEqual(configuration.mcpEndpoint, "/mcp")
         XCTAssertEqual(configuration.activePetID, OpenPetsBundledPets.starcornID)
+        XCTAssertEqual(configuration.petScalesByID, [:])
         XCTAssertEqual(configuration.disabledPluginIDs, [])
+    }
+
+    func testOpenPetsConfigurationResolvesPerPetScaleWithDisplayFallback() {
+        var configuration = OpenPetsConfiguration(
+            display: OpenPetsDisplayConfiguration(scale: 0.75, messageAreaHeight: 44),
+            petScalesByID: ["starcorn": 1.5]
+        )
+
+        XCTAssertEqual(configuration.scale(forPetID: "starcorn"), 1.5)
+        XCTAssertEqual(configuration.scale(forPetID: "unknown-pet"), 0.75)
+        XCTAssertEqual(
+            configuration.display(forPetID: "starcorn"),
+            OpenPetsDisplayConfiguration(scale: 1.5, messageAreaHeight: 44)
+        )
+
+        configuration.setScale(2, forPetID: "unknown-pet")
+
+        XCTAssertEqual(configuration.scale(forPetID: "unknown-pet"), 2)
+        XCTAssertEqual(configuration.display.scale, 0.75)
     }
 
     func testClaudeCodeQuotaCacheParsesStatusLinePayload() throws {
