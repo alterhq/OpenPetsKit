@@ -48,6 +48,8 @@ The desktop app, CLI, MCP server, assistant setup, and release packaging live in
 
 Prefer minimal, direct changes over large rewrites. If a change affects public APIs, config keys, socket behavior, or pet bundle format, call that out clearly in the pull request.
 
+For the first cloud surface release, review public symbol names before tagging OpenPetsKit as a minor feature release. The matching OpenPets release should replace any local `../openpetskit` development dependency with the published OpenPetsKit version before tagging.
+
 ## Coding Guidelines
 
 - Follow the style already present in the codebase.

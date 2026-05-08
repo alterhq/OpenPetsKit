@@ -5,12 +5,40 @@ public struct PetManifest: Codable, Equatable, Sendable {
     public var displayName: String
     public var description: String
     public var spritesheetPath: String
+    public var reactionAnimations: [OpenPetsPetReactionAnimation]
 
-    public init(id: String, displayName: String, description: String, spritesheetPath: String) {
+    public init(
+        id: String,
+        displayName: String,
+        description: String,
+        spritesheetPath: String,
+        reactionAnimations: [OpenPetsPetReactionAnimation] = []
+    ) {
         self.id = id
         self.displayName = displayName
         self.description = description
         self.spritesheetPath = spritesheetPath
+        self.reactionAnimations = reactionAnimations
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case displayName
+        case description
+        case spritesheetPath
+        case reactionAnimations
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        description = try container.decode(String.self, forKey: .description)
+        spritesheetPath = try container.decode(String.self, forKey: .spritesheetPath)
+        reactionAnimations = try container.decodeIfPresent(
+            [OpenPetsPetReactionAnimation].self,
+            forKey: .reactionAnimations
+        ) ?? []
     }
 }
 

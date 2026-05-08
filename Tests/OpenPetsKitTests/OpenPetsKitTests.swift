@@ -25,6 +25,32 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(manifest.id, "starcorn")
         XCTAssertEqual(manifest.displayName, "Starcorn")
         XCTAssertEqual(manifest.spritesheetPath, "spritesheet.webp")
+        XCTAssertTrue(manifest.reactionAnimations.isEmpty)
+    }
+
+    func testDecodePetManifestWithReactionAnimations() throws {
+        let data = Data(
+            """
+            {
+              "id": "starcorn",
+              "displayName": "Starcorn",
+              "description": "A white chibi unicorn.",
+              "spritesheetPath": "spritesheet.webp",
+              "reactionAnimations": [
+                {
+                  "kind": "low-energy",
+                  "animation": "waiting"
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let manifest = try JSONDecoder().decode(PetManifest.self, from: data)
+
+        XCTAssertEqual(manifest.reactionAnimations, [
+            OpenPetsPetReactionAnimation(kind: .lowEnergy, animation: .waiting)
+        ])
     }
 
     func testLoadPetBundleDerivesCodexAtlas() throws {

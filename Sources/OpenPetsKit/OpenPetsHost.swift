@@ -248,6 +248,23 @@ public final class OpenPetsHostSession {
     }
 
     @discardableResult
+    public func setSurfaceUpdates(_ updates: [OpenPetsSurfaceUpdate]) -> [OpenPetsResolvedSurface] {
+        controller?.setSurfaceUpdates(updates) ?? OpenPetsSurfacePlacementResolver().resolve(updates)
+    }
+
+    public func clearSurfaceUpdates() {
+        _ = setSurfaceUpdates([])
+    }
+
+    public func setPetReactionUpdates(_ updates: [OpenPetsPetReactionUpdate]) {
+        controller?.setPetReactionUpdates(updates)
+    }
+
+    public func clearPetReactionUpdates() {
+        setPetReactionUpdates([])
+    }
+
+    @discardableResult
     public func handle(_ command: PetCommand) -> PetResponse {
         switch command {
         case .ping:
@@ -474,6 +491,12 @@ struct PetWindowPositioning {
 }
 
 @MainActor
+private enum ResolvedPetReactionAnimation: Equatable {
+    case standard(PetAnimation)
+    case custom(OpenPetsPetReactionKind)
+}
+
+@MainActor
 private final class PetHostController {
     private let petBundle: PetBundle
     private let positionStore: PetPositionStore
@@ -481,10 +504,15 @@ private final class PetHostController {
     private let petView: PetHostView
     private let messagePanel: NSPanel
     private let messageView: PetMessagePanelView
+    private let surfacePanel: NSPanel
+    private let surfaceView: PetSurfacePanelView
     private let messageAreaHeight: CGFloat
     private let legacyContentSize: CGSize
     private let spriteSize: CGSize
     private let stableSpriteBounds: CGRect
+    private let surfacePalette: OpenPetsPetSurfacePalette
+    private let reactionFrames: [OpenPetsPetReactionKind: [CGImage]]
+    private let reactionFrameDurations: [OpenPetsPetReactionKind: [Int]]
     private var animationTimer: Timer?
     private var glideTimer: Timer?
     private var callMotionTask: Task<Void, Never>?
@@ -494,9 +522,16 @@ private final class PetHostController {
     private var glideAnimationFallback: PetAnimation = .runningRight
     private var ttlWorkItem: DispatchWorkItem?
     private var messageWorkItems: [String: DispatchWorkItem] = [:]
+    private var reactionWorkItems: [String: DispatchWorkItem] = [:]
+    private var petReactionUpdatesByID: [String: OpenPetsPetReactionUpdate] = [:]
     private var currentAnimation: PetAnimation = .idle
+    private var currentReactionKind: OpenPetsPetReactionKind?
     private var currentFrameIndex = 0
     private var remainingAnimationCycles: Int?
+    private let surfaceResolver = OpenPetsSurfacePlacementResolver()
+    private var activeReactionAnimation: ResolvedPetReactionAnimation?
+    private var surfaceGlobalMouseMonitor: Any?
+    private var surfaceLocalMouseMonitor: Any?
 
     var petManifest: PetManifest {
         petBundle.manifest
@@ -513,6 +548,10 @@ private final class PetHostController {
         messageAreaHeight = max(display.messageAreaHeight, 108)
 
         let frames = try PetHostController.loadFrames(from: petBundle)
+        surfacePalette = OpenPetsPetSurfacePalette.extract(from: frames)
+        let reactionAssets = try PetHostController.loadReactionFrames(from: petBundle)
+        reactionFrames = reactionAssets.frames
+        reactionFrameDurations = reactionAssets.durations
         spriteSize = CGSize(
             width: CGFloat(petBundle.atlas.cellWidth) * display.scale,
             height: CGFloat(petBundle.atlas.cellHeight) * display.scale
@@ -535,6 +574,7 @@ private final class PetHostController {
             petSize: stableSpriteBounds.size,
             messageAreaHeight: messageAreaHeight
         )
+        surfaceView = PetSurfacePanelView(palette: surfacePalette)
 
         let contentSize = petView.bounds.size
         let initialOrigin = PetWindowPositioning.initialWindowOrigin(
@@ -553,6 +593,12 @@ private final class PetHostController {
             defer: false
         )
         messagePanel = NSPanel(
+            contentRect: CGRect(origin: .zero, size: .zero),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        surfacePanel = NSPanel(
             contentRect: CGRect(origin: .zero, size: .zero),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -577,6 +623,16 @@ private final class PetHostController {
         messagePanel.isOpaque = false
         messagePanel.level = .statusBar
 
+        surfacePanel.backgroundColor = .clear
+        surfacePanel.acceptsMouseMovedEvents = false
+        surfacePanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        surfacePanel.contentView = surfaceView
+        surfacePanel.hasShadow = false
+        surfacePanel.ignoresMouseEvents = true
+        surfacePanel.isMovableByWindowBackground = false
+        surfacePanel.isOpaque = false
+        surfacePanel.level = .statusBar
+
         petView.onClick = { [weak self] in
             self?.play(.waving, loop: false, ttlSeconds: nil)
         }
@@ -587,6 +643,7 @@ private final class PetHostController {
         }
         petView.onDragMove = { [weak self] _ in
             self?.positionMessagePanel()
+            self?.positionSurfacePanel()
         }
         petView.onDragDirectionChange = { [weak self] direction in
             self?.switchDragDirection(to: direction)
@@ -604,6 +661,10 @@ private final class PetHostController {
         messageView.onLayoutChanged = { [weak self] in
             self?.positionMessagePanel()
         }
+        surfaceView.onSelectSurface = { [weak self] surface in
+            self?.showSurfaceDetail(for: surface)
+        }
+        installSurfaceMouseTracking()
         screenParametersObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -619,6 +680,10 @@ private final class PetHostController {
 
     func show() {
         window.orderFrontRegardless()
+        if surfaceView.hasVisibleSurfaces {
+            positionSurfacePanel()
+            surfacePanel.orderFrontRegardless()
+        }
         if messageView.hasVisibleMessages {
             positionMessagePanel()
             messagePanel.orderFrontRegardless()
@@ -637,6 +702,10 @@ private final class PetHostController {
         ttlWorkItem?.cancel()
         ttlWorkItem = nil
         cancelMessageWorkItems()
+        cancelReactionWorkItems()
+        removeSurfaceMouseTracking()
+        surfacePanel.orderOut(nil)
+        surfacePanel.close()
         messagePanel.orderOut(nil)
         messagePanel.close()
         window.orderOut(nil)
@@ -678,6 +747,7 @@ private final class PetHostController {
         guard hypot(targetOrigin.x - currentOrigin.x, targetOrigin.y - currentOrigin.y) > 1 else {
             window.setFrameOrigin(targetOrigin)
             positionMessagePanel()
+            positionSurfacePanel()
             savePosition()
             return
         }
@@ -694,6 +764,38 @@ private final class PetHostController {
         callMotionTask = Task { [weak self] in
             await self?.runCallMotion(from: currentOrigin, to: targetOrigin)
         }
+    }
+
+    @discardableResult
+    func setSurfaceUpdates(_ updates: [OpenPetsSurfaceUpdate]) -> [OpenPetsResolvedSurface] {
+        let resolvedSurfaces = surfaceResolver.resolve(updates)
+        surfaceView.set(resolvedSurfaces: resolvedSurfaces)
+        if surfaceView.hasVisibleSurfaces {
+            positionSurfacePanel()
+            surfacePanel.orderFrontRegardless()
+            updateSurfaceCursor()
+        } else {
+            surfacePanel.orderOut(nil)
+        }
+        return resolvedSurfaces
+    }
+
+    func setPetReactionUpdates(_ updates: [OpenPetsPetReactionUpdate]) {
+        let previousReactionAnimation = activeReactionAnimation
+
+        var updatesByID: [String: OpenPetsPetReactionUpdate] = [:]
+        for update in updates where update.type == "pet.reaction" {
+            updatesByID[update.reactionID] = update
+        }
+
+        for reactionID in Set(petReactionUpdatesByID.keys).subtracting(updatesByID.keys) {
+            reactionWorkItems[reactionID]?.cancel()
+            reactionWorkItems[reactionID] = nil
+        }
+
+        petReactionUpdatesByID = updatesByID
+        scheduleReactionExpirations(for: updatesByID.values)
+        selectActiveReaction(previousReactionAnimation: previousReactionAnimation)
     }
 
     private func defaultWindowOrigin() -> CGPoint {
@@ -743,6 +845,36 @@ private final class PetHostController {
         DispatchQueue.main.asyncAfter(deadline: .now() + ttlSeconds, execute: workItem)
     }
 
+    private func showSurfaceDetail(for surface: OpenPetsResolvedSurface) {
+        guard let detail = surface.update.detail else { return }
+        let rows = detail.rows.map { row in
+            if row.label.isEmpty {
+                return row.value
+            }
+            return "\(row.label): \(row.value)"
+        }
+        let action: PetBubbleAction?
+        if
+            let actionURL = detail.actionURL,
+            let url = URL(string: actionURL)
+        {
+            action = PetBubbleAction(label: detail.actionLabel ?? "open", url: url)
+        } else {
+            action = nil
+        }
+        setBubble(
+            PetBubble(
+                title: detail.title,
+                detail: rows.joined(separator: "\n"),
+                indicator: indicator(forSurfaceTone: surface.update.tone),
+                action: action
+            ),
+            threadId: "surface-detail.\(surface.update.surfaceID)",
+            ttlSeconds: nil
+        )
+        play(.waving, loop: false, ttlSeconds: nil)
+    }
+
     private func clearBubble(threadId: String) {
         messageWorkItems[threadId]?.cancel()
         messageWorkItems[threadId] = nil
@@ -761,6 +893,38 @@ private final class PetHostController {
         messageWorkItems.removeAll()
     }
 
+    private func scheduleReactionExpirations(for updates: Dictionary<String, OpenPetsPetReactionUpdate>.Values) {
+        for update in updates {
+            reactionWorkItems[update.reactionID]?.cancel()
+            guard let ttlSeconds = update.ttlSeconds, ttlSeconds > 0 else {
+                reactionWorkItems[update.reactionID] = nil
+                continue
+            }
+
+            let workItem = DispatchWorkItem { [weak self] in
+                Task { @MainActor in
+                    self?.expireReaction(reactionID: update.reactionID)
+                }
+            }
+            reactionWorkItems[update.reactionID] = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + ttlSeconds, execute: workItem)
+        }
+    }
+
+    private func expireReaction(reactionID: String) {
+        reactionWorkItems[reactionID]?.cancel()
+        reactionWorkItems[reactionID] = nil
+        guard petReactionUpdatesByID.removeValue(forKey: reactionID) != nil else { return }
+        selectActiveReaction(previousReactionAnimation: activeReactionAnimation)
+    }
+
+    private func cancelReactionWorkItems() {
+        for workItem in reactionWorkItems.values {
+            workItem.cancel()
+        }
+        reactionWorkItems.removeAll()
+    }
+
     private func play(_ animation: PetAnimation, loop: Bool, ttlSeconds: Double?) {
         play(animation, loopCount: loop ? nil : 1, ttlSeconds: ttlSeconds)
     }
@@ -769,6 +933,7 @@ private final class PetHostController {
         cancelLaunchGlide()
         cancelCallMotion()
         ttlWorkItem?.cancel()
+        currentReactionKind = nil
         currentAnimation = animation
         currentFrameIndex = entryFrame(for: animation)
         remainingAnimationCycles = loopCount
@@ -778,7 +943,7 @@ private final class PetHostController {
         guard let ttlSeconds, ttlSeconds > 0, animation != .idle else { return }
         let workItem = DispatchWorkItem { [weak self] in
             Task { @MainActor in
-                self?.play(.idle, loop: true, ttlSeconds: nil)
+                self?.resumeAmbientAnimation()
             }
         }
         ttlWorkItem = workItem
@@ -786,7 +951,92 @@ private final class PetHostController {
     }
 
     private func stopAnimation() {
-        play(.idle, loop: true, ttlSeconds: nil)
+        resumeAmbientAnimation()
+    }
+
+    private func playReaction(_ reaction: OpenPetsPetReactionKind) {
+        guard let frames = reactionFrames[reaction], !frames.isEmpty else { return }
+        cancelLaunchGlide()
+        cancelCallMotion()
+        ttlWorkItem?.cancel()
+        currentReactionKind = reaction
+        currentFrameIndex = 0
+        remainingAnimationCycles = nil
+        petView.set(image: frames[0])
+        scheduleNextFrame()
+    }
+
+    private func selectActiveReaction(previousReactionAnimation: ResolvedPetReactionAnimation?) {
+        let reaction = petReactionUpdatesByID.values
+            .sorted {
+                if $0.priority != $1.priority {
+                    return $0.priority > $1.priority
+                }
+                return $0.reactionID < $1.reactionID
+            }
+            .first
+        if let reaction {
+            activeReactionAnimation = animation(forReaction: reaction.kind)
+        } else {
+            activeReactionAnimation = nil
+        }
+        applyActiveReactionIfIdle(previousReactionAnimation: previousReactionAnimation)
+    }
+
+    private func applyActiveReactionIfIdle(previousReactionAnimation: ResolvedPetReactionAnimation?) {
+        let currentReactionAnimation = currentReactionKind.map(ResolvedPetReactionAnimation.custom)
+        guard
+            currentAnimation == .idle ||
+                (activeReactionAnimation != nil && currentReactionAnimation == activeReactionAnimation) ||
+                currentReactionAnimation == previousReactionAnimation ||
+                previousReactionAnimation == .standard(currentAnimation)
+        else {
+            return
+        }
+        guard let activeReactionAnimation else {
+            play(.idle, loop: true, ttlSeconds: nil)
+            return
+        }
+        switch activeReactionAnimation {
+        case .standard(let animation):
+            play(animation, loop: true, ttlSeconds: nil)
+        case .custom(let kind):
+            playReaction(kind)
+        }
+    }
+
+    private func resumeAmbientAnimation() {
+        guard let activeReactionAnimation else {
+            play(.idle, loop: true, ttlSeconds: nil)
+            return
+        }
+        switch activeReactionAnimation {
+        case .standard(let animation):
+            play(animation, loop: true, ttlSeconds: nil)
+        case .custom(let kind):
+            playReaction(kind)
+        }
+    }
+
+    private func animation(forReaction kind: OpenPetsPetReactionKind) -> ResolvedPetReactionAnimation? {
+        if reactionFrames[kind]?.isEmpty == false {
+            return .custom(kind)
+        }
+        if let mappedAnimation = petBundle.manifest.reactionAnimations.first(where: { $0.kind == kind })?.animation {
+            return .standard(mappedAnimation)
+        }
+        switch kind {
+        case .lowEnergy, .resting:
+            return .standard(.waiting)
+        case .charging, .celebrate:
+            return .standard(.jumping)
+        case .alert:
+            return .standard(.failed)
+        case .working:
+            return .standard(.running)
+        default:
+            return nil
+        }
     }
 
     private func handleDragEnd(releaseVelocity: CGVector, fallbackAnimation: PetAnimation?) {
@@ -794,7 +1044,7 @@ private final class PetHostController {
         let fallbackAnimation = directionalAnimation(from: fallbackAnimation)
         guard PetLaunchMotion.shouldLaunch(velocity: releaseVelocity) else {
             savePosition()
-            play(.idle, loop: true, ttlSeconds: nil)
+            resumeAmbientAnimation()
             return
         }
 
@@ -829,6 +1079,7 @@ private final class PetHostController {
 
         window.setFrameOrigin(step.origin)
         positionMessagePanel()
+        positionSurfacePanel()
         glideVelocity = step.velocity
         if step.animation != glideAnimationFallback {
             glideAnimationFallback = step.animation
@@ -843,7 +1094,7 @@ private final class PetHostController {
     private func finishLaunchGlide() {
         cancelLaunchGlide()
         savePosition()
-        play(.idle, loop: true, ttlSeconds: nil)
+        resumeAmbientAnimation()
     }
 
     private func cancelLaunchGlide() {
@@ -861,6 +1112,7 @@ private final class PetHostController {
             let progress = min(CGFloat(elapsed / duration), 1)
             window.setFrameOrigin(PetCallMotion.origin(from: origin, to: targetOrigin, progress: progress))
             positionMessagePanel()
+            positionSurfacePanel()
 
             guard progress < 1 else {
                 finishCallMotion(at: targetOrigin)
@@ -875,8 +1127,9 @@ private final class PetHostController {
         callMotionTask = nil
         window.setFrameOrigin(targetOrigin)
         positionMessagePanel()
+        positionSurfacePanel()
         savePosition()
-        play(.idle, loop: true, ttlSeconds: nil)
+        resumeAmbientAnimation()
     }
 
     private func cancelCallMotion() {
@@ -908,6 +1161,50 @@ private final class PetHostController {
         messageView.resizeWindow(preservingPetAnchor: petAnchor)
     }
 
+    private func positionSurfacePanel() {
+        guard surfaceView.hasVisibleSurfaces else { return }
+        let petFrame = currentPetScreenFrame()
+        surfaceView.resizeWindow(aroundPetFrame: petFrame)
+        updateSurfaceCursor()
+    }
+
+    private func installSurfaceMouseTracking() {
+        let eventMask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseDown]
+        surfaceGlobalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { [weak self] event in
+            Task { @MainActor in
+                self?.handleSurfaceMouseEvent(event)
+            }
+        }
+        surfaceLocalMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) { [weak self] event in
+            Task { @MainActor in
+                self?.handleSurfaceMouseEvent(event)
+            }
+            return event
+        }
+    }
+
+    private func removeSurfaceMouseTracking() {
+        if let surfaceGlobalMouseMonitor {
+            NSEvent.removeMonitor(surfaceGlobalMouseMonitor)
+            self.surfaceGlobalMouseMonitor = nil
+        }
+        if let surfaceLocalMouseMonitor {
+            NSEvent.removeMonitor(surfaceLocalMouseMonitor)
+            self.surfaceLocalMouseMonitor = nil
+        }
+    }
+
+    private func handleSurfaceMouseEvent(_ event: NSEvent) {
+        updateSurfaceCursor(screenPoint: NSEvent.mouseLocation)
+        guard event.type == .leftMouseDown else { return }
+        surfaceView.selectSurface(atScreenPoint: NSEvent.mouseLocation)
+    }
+
+    private func updateSurfaceCursor(screenPoint: CGPoint = NSEvent.mouseLocation) {
+        guard surfaceView.hasVisibleSurfaces, surfacePanel.isVisible else { return }
+        surfaceView.setCursorScreenPoint(screenPoint)
+    }
+
     private func directionalAnimation(from animation: PetAnimation?) -> PetAnimation {
         if let animation {
             return animation == .runningLeft ? .runningLeft : .runningRight
@@ -921,6 +1218,7 @@ private final class PetHostController {
     private func switchDragDirection(to animation: PetAnimation) {
         ttlWorkItem?.cancel()
         let previousAnimation = currentAnimation
+        currentReactionKind = nil
         currentAnimation = animation
         remainingAnimationCycles = nil
         if previousAnimation == .runningRight || previousAnimation == .runningLeft {
@@ -945,7 +1243,7 @@ private final class PetHostController {
 
     private func scheduleNextFrame() {
         animationTimer?.invalidate()
-        let durations = currentAnimation.frameDurationsMilliseconds
+        let durations = currentReactionKind.flatMap { reactionFrameDurations[$0] } ?? currentAnimation.frameDurationsMilliseconds
         let duration = Double(durations[min(currentFrameIndex, durations.count - 1)]) / 1000
         animationTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
             Task { @MainActor in
@@ -955,7 +1253,7 @@ private final class PetHostController {
     }
 
     private func advanceFrame() {
-        let frameCount = currentAnimation.frameCount
+        let frameCount = currentReactionKind.flatMap { reactionFrames[$0]?.count } ?? currentAnimation.frameCount
         currentFrameIndex += 1
 
         if currentFrameIndex >= frameCount {
@@ -965,7 +1263,7 @@ private final class PetHostController {
                     self.remainingAnimationCycles = remainingCycles
                     currentFrameIndex = 0
                 } else {
-                    play(.idle, loop: true, ttlSeconds: nil)
+                    resumeAmbientAnimation()
                     return
                 }
             } else {
@@ -973,8 +1271,25 @@ private final class PetHostController {
             }
         }
 
-        petView.set(animation: currentAnimation, frameIndex: currentFrameIndex)
+        if let currentReactionKind, let frames = reactionFrames[currentReactionKind], !frames.isEmpty {
+            petView.set(image: frames[currentFrameIndex % frames.count])
+        } else {
+            petView.set(animation: currentAnimation, frameIndex: currentFrameIndex)
+        }
         scheduleNextFrame()
+    }
+
+    private func indicator(forSurfaceTone tone: OpenPetsSurfaceTone) -> PetBubbleIndicator {
+        switch tone {
+        case .critical, .warning:
+            .attention
+        case .success:
+            .success
+        case .muted:
+            .none
+        case .normal:
+            .working
+        }
     }
 
     private func animation(forStatusKind kind: String) -> PetAnimation {
@@ -1061,6 +1376,60 @@ private final class PetHostController {
         }
 
         return frames
+    }
+
+    private static func loadReactionFrames(
+        from petBundle: PetBundle
+    ) throws -> (frames: [OpenPetsPetReactionKind: [CGImage]], durations: [OpenPetsPetReactionKind: [Int]]) {
+        var framesByReaction: [OpenPetsPetReactionKind: [CGImage]] = [:]
+        var durationsByReaction: [OpenPetsPetReactionKind: [Int]] = [:]
+
+        for reaction in petBundle.manifest.reactionAnimations {
+            guard
+                let spritesheetPath = reaction.spritesheetPath,
+                let row = reaction.row,
+                let frameCount = reaction.frameCount,
+                frameCount > 0
+            else {
+                continue
+            }
+
+            let spritesheetURL = petBundle.directoryURL.appendingPathComponent(spritesheetPath)
+            guard
+                let source = CGImageSourceCreateWithURL(spritesheetURL as CFURL, nil),
+                let spritesheet = CGImageSourceCreateImageAtIndex(source, 0, nil)
+            else {
+                continue
+            }
+
+            guard
+                spritesheet.width % petBundle.atlas.cellWidth == 0,
+                spritesheet.height % petBundle.atlas.cellHeight == 0,
+                row >= 0,
+                (row + 1) * petBundle.atlas.cellHeight <= spritesheet.height,
+                frameCount * petBundle.atlas.cellWidth <= spritesheet.width
+            else {
+                continue
+            }
+
+            let images = (0..<frameCount).compactMap { column in
+                spritesheet.cropping(to: CGRect(
+                    x: column * petBundle.atlas.cellWidth,
+                    y: row * petBundle.atlas.cellHeight,
+                    width: petBundle.atlas.cellWidth,
+                    height: petBundle.atlas.cellHeight
+                ))
+            }
+            guard !images.isEmpty else { continue }
+            framesByReaction[reaction.kind] = images
+            if let durations = reaction.frameDurationsMilliseconds, !durations.isEmpty {
+                durationsByReaction[reaction.kind] = durations
+            } else {
+                durationsByReaction[reaction.kind] = Array(repeating: 150, count: images.count)
+            }
+        }
+
+        return (framesByReaction, durationsByReaction)
     }
 }
 
@@ -1151,6 +1520,611 @@ func openPetsBubbleIndicator(forStatusKind kind: String) -> PetBubbleIndicator {
     }
 }
 
+private final class SurfaceHostingView: NSHostingView<OpenPetsSurfaceOverlayView> {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+@MainActor
+final class PetSurfacePanelView: NSView {
+    private static let surfaceOutset: CGFloat = 184
+
+    var onSelectSurface: ((OpenPetsResolvedSurface) -> Void)?
+
+    var hasVisibleSurfaces: Bool {
+        !visibleSurfaces.isEmpty
+    }
+
+    private var visibleSurfaces: [OpenPetsResolvedSurface] = []
+    private var currentPetFrameInPanel: CGRect = .zero
+    private var cursorPoint: CGPoint?
+    private var hotspotFrames: [String: CGRect] = [:]
+    private let palette: OpenPetsPetSurfacePalette
+    private lazy var hostingView = SurfaceHostingView(rootView: OpenPetsSurfaceOverlayView(
+        resolvedSurfaces: [],
+        petFrame: .zero,
+        cursorPoint: nil,
+        hotspotFrames: [:],
+        palette: palette
+    ))
+
+    init(palette: OpenPetsPetSurfacePalette = .fallback) {
+        self.palette = palette
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        addSubview(hostingView)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var isOpaque: Bool {
+        false
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        false
+    }
+
+    override func layout() {
+        super.layout()
+        hostingView.frame = bounds
+        updateHostingView()
+    }
+
+    func set(resolvedSurfaces: [OpenPetsResolvedSurface]) {
+        visibleSurfaces = resolvedSurfaces.filter(\.isVisibleSurface)
+        if visibleSurfaces.isEmpty {
+            setFrameSize(.zero)
+        }
+        updateHotspotFrames()
+        updateHostingView()
+    }
+
+    func resizeWindow(aroundPetFrame petFrame: CGRect) {
+        guard let window, hasVisibleSurfaces else { return }
+        let frame = petFrame.insetBy(dx: -Self.surfaceOutset, dy: -Self.surfaceOutset)
+        currentPetFrameInPanel = CGRect(
+            x: Self.surfaceOutset,
+            y: Self.surfaceOutset,
+            width: petFrame.width,
+            height: petFrame.height
+        )
+        setFrameSize(frame.size)
+        hostingView.frame = bounds
+        window.setFrame(frame, display: false)
+        updateHotspotFrames()
+        updateHostingView()
+    }
+
+    func setCursorScreenPoint(_ screenPoint: CGPoint?) {
+        cursorPoint = screenPoint.map { surfacePoint(forLocalPoint: localPoint(forScreenPoint: $0)) }
+        updateHostingView()
+    }
+
+    @discardableResult
+    func selectSurface(atScreenPoint screenPoint: CGPoint) -> Bool {
+        guard let target = hotspotTarget(at: surfacePoint(forLocalPoint: localPoint(forScreenPoint: screenPoint))) else { return false }
+        onSelectSurface?(target)
+        return true
+    }
+
+    private func updateHostingView() {
+        hostingView.rootView = OpenPetsSurfaceOverlayView(
+            resolvedSurfaces: visibleSurfaces,
+            petFrame: currentPetFrameInPanel,
+            cursorPoint: cursorPoint,
+            hotspotFrames: hotspotFrames,
+            palette: palette
+        )
+    }
+
+    private func updateHotspotFrames() {
+        hotspotFrames = Dictionary(uniqueKeysWithValues: visibleSurfaces.filter(\.isHotspotSurface).map { surface in
+            (
+                surface.update.surfaceID,
+                OpenPetsSurfaceHotspotLayout.frame(
+                    for: surface.primarySlot,
+                    petFrame: currentPetFrameInPanel,
+                    panelSize: bounds.size
+                )
+            )
+        })
+    }
+
+    private func hotspotTarget(at point: CGPoint) -> OpenPetsResolvedSurface? {
+        guard !currentPetFrameInPanel.contains(point) else { return nil }
+        return visibleSurfaces.filter(\.isHotspotSurface).first { surface in
+            guard let frame = hotspotFrames[surface.update.surfaceID] else { return false }
+            let visibility = OpenPetsHotspotVisibility(distance: OpenPetsSurfaceHotspotLayout.hotspotDistance(from: point, to: frame))
+            return OpenPetsSurfaceHotspotLayout.hitFrame(for: frame, visibility: visibility).contains(point)
+        }
+    }
+
+    private func localPoint(forScreenPoint screenPoint: CGPoint) -> CGPoint {
+        guard let window else { return screenPoint }
+        let frame = window.frame
+        return CGPoint(x: screenPoint.x - frame.minX, y: screenPoint.y - frame.minY)
+    }
+
+    private func surfacePoint(forLocalPoint point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x, y: bounds.height - point.y)
+    }
+}
+
+private struct OpenPetsSurfaceOverlayView: View {
+    let resolvedSurfaces: [OpenPetsResolvedSurface]
+    let petFrame: CGRect
+    let cursorPoint: CGPoint?
+    let hotspotFrames: [String: CGRect]
+    let palette: OpenPetsPetSurfacePalette
+
+    private var overlaySurfaces: [OpenPetsResolvedSurface] {
+        resolvedSurfaces.filter { resolved in
+            guard case .placed = resolved.placement else { return false }
+            return true
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                ForEach(Array(overlaySurfaces.enumerated()), id: \.offset) { _, resolved in
+                    overlayView(for: resolved, in: geometry.size)
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func overlayView(for resolved: OpenPetsResolvedSurface, in size: CGSize) -> some View {
+        OpenPetsCloudHotspotSurfaceView(
+            surface: resolved.update,
+            visibility: visibility(for: resolved),
+            palette: palette
+        )
+        .frame(width: OpenPetsSurfaceHotspotLayout.widgetSize.width, height: OpenPetsSurfaceHotspotLayout.widgetSize.height)
+        .position(position(for: resolved, in: size))
+    }
+
+    private func position(for resolved: OpenPetsResolvedSurface, in size: CGSize) -> CGPoint {
+        let frame = hotspotFrames[resolved.update.surfaceID] ?? OpenPetsSurfaceHotspotLayout.frame(
+            for: resolved.primarySlot,
+            petFrame: petFrame,
+            panelSize: size
+        )
+        return CGPoint(x: frame.midX, y: frame.midY)
+    }
+
+    private func visibility(for resolved: OpenPetsResolvedSurface) -> OpenPetsHotspotVisibility {
+        guard
+            let cursorPoint,
+            let frame = hotspotFrames[resolved.update.surfaceID]
+        else {
+            return OpenPetsHotspotVisibility(distance: .infinity)
+        }
+        return OpenPetsHotspotVisibility(distance: OpenPetsSurfaceHotspotLayout.hotspotDistance(from: cursorPoint, to: frame))
+    }
+}
+
+struct OpenPetsHotspotVisibility: Equatable {
+    static let defaultAlpha: CGFloat = 0.035
+    static let revealDistance: CGFloat = 144
+    static let compactDistance: CGFloat = 96
+    static let fullDistance: CGFloat = 28
+
+    var opacity: CGFloat
+    var compactProgress: CGFloat
+
+    init(distance: CGFloat) {
+        if distance.isInfinite || distance >= Self.revealDistance {
+            opacity = Self.defaultAlpha
+            compactProgress = 0
+            return
+        }
+
+        let revealProgress = Self.smoothed(1 - max(0, min(distance / Self.revealDistance, 1)))
+        opacity = Self.defaultAlpha + revealProgress * (1 - Self.defaultAlpha)
+
+        if distance <= Self.fullDistance {
+            compactProgress = 1
+        } else if distance >= Self.compactDistance {
+            compactProgress = 0
+        } else {
+            compactProgress = Self.smoothed(
+                1 - ((distance - Self.fullDistance) / (Self.compactDistance - Self.fullDistance))
+            )
+        }
+    }
+
+    private static func smoothed(_ progress: CGFloat) -> CGFloat {
+        progress * progress * (3 - 2 * progress)
+    }
+}
+
+enum OpenPetsSurfaceHotspotLayout {
+    static let widgetSize = CGSize(width: 184, height: 68)
+    static let revealedHitSize = CGSize(width: 72, height: 26)
+    static let minimalHitSize = CGSize(width: 14, height: 14)
+    private static let sideGap: CGFloat = 73
+
+    static func frame(for slot: OpenPetsSurfaceSlot?, petFrame: CGRect, panelSize: CGSize) -> CGRect {
+        let center: CGPoint
+        switch slot {
+        case .some(.hotspotTopLeading):
+            center = CGPoint(x: petFrame.minX - sideGap, y: petFrame.minY + 18)
+        case .some(.hotspotTopTrailing), .none:
+            center = CGPoint(x: petFrame.maxX + sideGap, y: petFrame.minY + 18)
+        case .some(.hotspotRight):
+            center = CGPoint(x: petFrame.maxX + sideGap, y: petFrame.midY)
+        case .some(.hotspotBottomTrailing):
+            center = CGPoint(x: petFrame.maxX + sideGap, y: petFrame.maxY - 18)
+        case .some(.hotspotBottomLeading):
+            center = CGPoint(x: petFrame.minX - sideGap, y: petFrame.maxY - 18)
+        case .some(.hotspotLeft):
+            center = CGPoint(x: petFrame.minX - sideGap, y: petFrame.midY)
+        case .some:
+            center = CGPoint(x: petFrame.maxX + sideGap, y: petFrame.minY + 18)
+        }
+
+        let halfWidth = widgetSize.width / 2
+        let halfHeight = widgetSize.height / 2
+        let clampedCenter = CGPoint(
+            x: min(max(center.x, halfWidth), max(halfWidth, panelSize.width - halfWidth)),
+            y: min(max(center.y, halfHeight), max(halfHeight, panelSize.height - halfHeight))
+        )
+        return CGRect(
+            x: clampedCenter.x - halfWidth,
+            y: clampedCenter.y - halfHeight,
+            width: widgetSize.width,
+            height: widgetSize.height
+        )
+    }
+
+    static func distance(from point: CGPoint, to rect: CGRect) -> CGFloat {
+        let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
+        let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
+        return hypot(dx, dy)
+    }
+
+    static func hotspotDistance(from point: CGPoint, to frame: CGRect) -> CGFloat {
+        hypot(point.x - frame.midX, point.y - frame.midY)
+    }
+
+    static func hitFrame(for frame: CGRect, visibility: OpenPetsHotspotVisibility) -> CGRect {
+        let progress = visibility.compactProgress
+        let size = CGSize(
+            width: minimalHitSize.width + (revealedHitSize.width - minimalHitSize.width) * progress,
+            height: minimalHitSize.height + (revealedHitSize.height - minimalHitSize.height) * progress
+        )
+        return CGRect(
+            x: frame.midX - size.width / 2,
+            y: frame.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+}
+
+private extension OpenPetsResolvedSurface {
+    var primarySlot: OpenPetsSurfaceSlot? {
+        guard case .placed(let slot) = placement else { return nil }
+        return slot
+    }
+
+    var isVisibleSurface: Bool {
+        guard case .placed = placement else { return false }
+        return true
+    }
+
+    var isHotspotSurface: Bool {
+        isVisibleSurface
+    }
+}
+
+struct OpenPetsPetSurfaceColor: Equatable {
+    var red: Double
+    var green: Double
+    var blue: Double
+
+    var color: Color {
+        Color(red: red, green: green, blue: blue)
+    }
+
+    var vividColor: Color {
+        Color(
+            hue: hue,
+            saturation: 1,
+            brightness: 1
+        )
+    }
+
+    var brightness: Double {
+        max(red, green, blue)
+    }
+
+    var saturation: Double {
+        let maximum = max(red, green, blue)
+        let minimum = min(red, green, blue)
+        guard maximum > 0 else { return 0 }
+        return (maximum - minimum) / maximum
+    }
+
+    var hue: Double {
+        let maximum = max(red, green, blue)
+        let minimum = min(red, green, blue)
+        let delta = maximum - minimum
+        guard delta > 0 else { return 0 }
+
+        let rawHue: Double
+        if maximum == red {
+            rawHue = ((green - blue) / delta).truncatingRemainder(dividingBy: 6)
+        } else if maximum == green {
+            rawHue = ((blue - red) / delta) + 2
+        } else {
+            rawHue = ((red - green) / delta) + 4
+        }
+
+        let normalized = rawHue / 6
+        return normalized < 0 ? normalized + 1 : normalized
+    }
+
+    var complementaryHue: Double {
+        let hue = hue + 0.5
+        return hue >= 1 ? hue - 1 : hue
+    }
+
+    func hueDistance(to other: OpenPetsPetSurfaceColor) -> Double {
+        hueDistance(toHue: other.hue)
+    }
+
+    func hueDistance(toHue otherHue: Double) -> Double {
+        let delta = abs(hue - otherHue)
+        return min(delta, 1 - delta)
+    }
+
+    func distance(to other: OpenPetsPetSurfaceColor) -> Double {
+        let redDelta = red - other.red
+        let greenDelta = green - other.green
+        let blueDelta = blue - other.blue
+        return sqrt(redDelta * redDelta + greenDelta * greenDelta + blueDelta * blueDelta)
+    }
+}
+
+struct OpenPetsPetSurfacePalette: Equatable {
+    var primary: OpenPetsPetSurfaceColor
+    var accent: OpenPetsPetSurfaceColor
+    var highlight: OpenPetsPetSurfaceColor
+
+    static let fallback = OpenPetsPetSurfacePalette(
+        primary: OpenPetsPetSurfaceColor(red: 0.70, green: 0.30, blue: 0.96),
+        accent: OpenPetsPetSurfaceColor(red: 1.00, green: 0.74, blue: 0.20),
+        highlight: OpenPetsPetSurfaceColor(red: 1.00, green: 0.48, blue: 0.74)
+    )
+
+    static func extract(from frames: [PetAnimation: [CGImage]]) -> OpenPetsPetSurfacePalette {
+        if let image = frames[.idle]?.first, let palette = extract(from: image) {
+            return palette
+        }
+        for image in frames.values.flatMap({ $0 }) {
+            if let palette = extract(from: image) {
+                return palette
+            }
+        }
+        return fallback
+    }
+
+    static func extract(from image: CGImage) -> OpenPetsPetSurfacePalette? {
+        guard let buckets = OpenPetsPetSurfacePaletteBuckets(image: image), !buckets.colors.isEmpty else {
+            return nil
+        }
+        let sortedColors = buckets.colors.sorted { lhs, rhs in
+            lhs.score > rhs.score
+        }
+        guard let primary = sortedColors.first?.color else { return nil }
+        let complementaryHue = primary.complementaryHue
+        let accent = sortedColors
+            .filter {
+                $0.color.distance(to: primary) > 0.35
+                    && $0.color.hueDistance(to: primary) > 0.22
+                    && $0.color.saturation > 0.18
+            }
+            .max { lhs, rhs in
+                accentScore(lhs, primary: primary, complementaryHue: complementaryHue)
+                    < accentScore(rhs, primary: primary, complementaryHue: complementaryHue)
+            }?.color
+            ?? complementaryColor(for: primary)
+        let highlight = sortedColors.first { candidate in
+            candidate.color.distance(to: primary) > 0.20 && candidate.color.distance(to: accent) > 0.20
+        }?.color ?? blended(primary, accent)
+        return OpenPetsPetSurfacePalette(primary: primary, accent: accent, highlight: highlight)
+    }
+
+    private static func accentScore(
+        _ candidate: OpenPetsPetSurfacePaletteBuckets.ScoredColor,
+        primary: OpenPetsPetSurfaceColor,
+        complementaryHue: Double
+    ) -> Double {
+        let hueFit = 1 - min(candidate.color.hueDistance(toHue: complementaryHue) / 0.5, 1)
+        let representation = log(candidate.score + 1)
+        return hueFit * 3
+            + candidate.color.distance(to: primary) * 1.25
+            + candidate.color.saturation * 0.75
+            + representation * 0.15
+    }
+
+    private static func complementaryColor(for color: OpenPetsPetSurfaceColor) -> OpenPetsPetSurfaceColor {
+        OpenPetsPetSurfaceColor(
+            red: min(1, max(0, 1.0 - color.red + 0.12)),
+            green: min(1, max(0, 1.0 - color.green + 0.12)),
+            blue: min(1, max(0, 1.0 - color.blue + 0.12))
+        )
+    }
+
+    private static func blended(
+        _ first: OpenPetsPetSurfaceColor,
+        _ second: OpenPetsPetSurfaceColor
+    ) -> OpenPetsPetSurfaceColor {
+        OpenPetsPetSurfaceColor(
+            red: min(1, (first.red + second.red) / 2 + 0.08),
+            green: min(1, (first.green + second.green) / 2 + 0.08),
+            blue: min(1, (first.blue + second.blue) / 2 + 0.08)
+        )
+    }
+}
+
+private struct OpenPetsPetSurfacePaletteBuckets {
+    struct ScoredColor {
+        var color: OpenPetsPetSurfaceColor
+        var score: Double
+    }
+
+    var colors: [ScoredColor]
+
+    init?(image: CGImage) {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0 else { return nil }
+
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+        guard
+            let context = CGContext(
+                data: &pixels,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        else {
+            return nil
+        }
+
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        let sampleStep = max(1, Int(sqrt(Double(width * height) / 4096.0)))
+        var buckets: [Int: (count: Int, red: Double, green: Double, blue: Double, saturation: Double)] = [:]
+        for y in stride(from: 0, to: height, by: sampleStep) {
+            for x in stride(from: 0, to: width, by: sampleStep) {
+                let offset = y * bytesPerRow + x * bytesPerPixel
+                let alpha = Double(pixels[offset + 3]) / 255.0
+                guard alpha > 0.18 else { continue }
+                let red = min(1, Double(pixels[offset]) / 255.0 / alpha)
+                let green = min(1, Double(pixels[offset + 1]) / 255.0 / alpha)
+                let blue = min(1, Double(pixels[offset + 2]) / 255.0 / alpha)
+                let color = OpenPetsPetSurfaceColor(red: red, green: green, blue: blue)
+                let brightness = max(red, green, blue)
+                guard brightness > 0.12, color.saturation > 0.12 else { continue }
+
+                let key = (Int(red * 7) << 8) | (Int(green * 7) << 4) | Int(blue * 7)
+                var bucket = buckets[key] ?? (0, 0, 0, 0, 0)
+                bucket.count += 1
+                bucket.red += red
+                bucket.green += green
+                bucket.blue += blue
+                bucket.saturation += color.saturation
+                buckets[key] = bucket
+            }
+        }
+
+        colors = buckets.values.compactMap { bucket in
+            guard bucket.count > 0 else { return nil }
+            let count = Double(bucket.count)
+            let color = OpenPetsPetSurfaceColor(
+                red: bucket.red / count,
+                green: bucket.green / count,
+                blue: bucket.blue / count
+            )
+            let score = count * (0.55 + bucket.saturation / count)
+            return ScoredColor(color: color, score: score)
+        }
+    }
+}
+
+private struct OpenPetsCloudHotspotSurfaceView: View {
+    let surface: OpenPetsSurfaceUpdate
+    let visibility: OpenPetsHotspotVisibility
+    let palette: OpenPetsPetSurfacePalette
+
+    var body: some View {
+        ZStack {
+            hiddenGlow
+                .opacity(1 - visibility.compactProgress)
+
+            cloudBackground
+                .opacity(visibility.compactProgress)
+
+            HStack(spacing: 5) {
+                Image(systemName: surface.icon)
+                    .font(.system(size: 11, weight: .medium))
+                    .symbolRenderingMode(.monochrome)
+                Text(surface.value)
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .lineLimit(1)
+                    .monospacedDigit()
+            }
+            .opacity(visibility.compactProgress)
+            .foregroundStyle(.white)
+            .shadow(color: .white.opacity(0.18), radius: 1)
+            .scaleEffect(0.84 + visibility.compactProgress * 0.16)
+        }
+        .opacity(visibility.opacity)
+    }
+
+    private var hiddenGlow: some View {
+        Circle()
+            .fill(palette.primary.vividColor)
+            .frame(width: 9, height: 9)
+            .blur(radius: 6)
+            .overlay {
+                Circle()
+                    .fill(palette.accent.vividColor)
+                    .frame(width: 5, height: 5)
+                    .blur(radius: 4)
+                    .offset(x: 4, y: 0)
+            }
+    }
+
+    private var cloudBackground: some View {
+        ZStack {
+            Ellipse()
+                .fill(palette.accent.vividColor)
+                .frame(width: 66, height: 30)
+                .blur(radius: 13)
+                .offset(x: -18, y: -1)
+                .blendMode(.screen)
+            Ellipse()
+                .fill(palette.primary.vividColor)
+                .frame(width: 66, height: 30)
+                .blur(radius: 13)
+                .offset(x: 18, y: 1)
+                .blendMode(.screen)
+            Ellipse()
+                .fill(palette.highlight.vividColor)
+                .frame(width: 42, height: 24)
+                .blur(radius: 12)
+                .offset(x: -2, y: 0)
+                .blendMode(.screen)
+        }
+        .compositingGroup()
+        .blur(radius: 1)
+    }
+}
+
 @MainActor
 final class PetHostView: NSView {
     var onClick: (() -> Void)? {
@@ -1234,8 +2208,8 @@ final class PetHostView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let hitView = super.hitTest(point)
-        return hitView === self ? nil : hitView
+        guard bounds.contains(point) else { return nil }
+        return spriteView.hitTest(convert(point, to: spriteView))
     }
 
     override func layout() {
@@ -1245,6 +2219,10 @@ final class PetHostView: NSView {
 
     func set(animation: PetAnimation, frameIndex: Int) {
         spriteView.set(animation: animation, frameIndex: frameIndex)
+    }
+
+    func set(image: CGImage) {
+        spriteView.set(image: image)
     }
 
     private func applyCurrentLayoutToSubviews() {
@@ -1983,7 +2961,7 @@ private struct OpenPetsBubbleContentView: View {
                         Text(detail)
                             .font(.system(size: 12.5, weight: .regular))
                             .foregroundStyle(.primary)
-                            .lineLimit(2)
+                            .lineLimit(3)
                             .truncationMode(.tail)
                             .fixedSize(horizontal: false, vertical: false)
                     }
@@ -2040,7 +3018,7 @@ private struct OpenPetsBubbleContentView: View {
             ]
         )
         let bodyLineHeight: CGFloat = 15
-        return min(2, max(1, Int(ceil((rect.height - 0.5) / bodyLineHeight))))
+        return min(3, max(1, Int(ceil((rect.height - 0.5) / bodyLineHeight))))
     }
 
     private var background: some View {
@@ -2457,6 +3435,11 @@ private final class PetSpriteView: NSView {
     func set(animation: PetAnimation, frameIndex: Int) {
         guard let asset = frameStore.asset(for: animation, frameIndex: frameIndex) else { return }
         currentFrameAsset = asset
+        needsDisplay = true
+    }
+
+    func set(image: CGImage) {
+        currentFrameAsset = PetSpriteFrameAsset(image: image, spriteSize: spriteSize)
         needsDisplay = true
     }
 
