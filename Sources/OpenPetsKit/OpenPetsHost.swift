@@ -2898,12 +2898,15 @@ private struct OpenPetsDismissibleBubbleView: View {
                     .shadow(color: .black.opacity(colorScheme == .dark ? 0.20 : 0.07), radius: 2, x: 0, y: 1)
                     .padding(.top, OpenPetsMessageLayout.closeButtonInset)
                     .padding(.leading, OpenPetsMessageLayout.closeButtonInset)
+                    .transition(.offset(x: -6).combined(with: .opacity))
                     .accessibilityLabel("Dismiss message")
                 }
             }
             .contentShape(Rectangle())
             .onHover { hovering in
-                isHovered = hovering
+                withAnimation(.easeOut(duration: 0.16)) {
+                    isHovered = hovering
+                }
             }
     }
 
@@ -2935,9 +2938,11 @@ private struct OpenPetsBubbleContentView: View {
                         .frame(maxWidth: max(1, bubbleSize.width - 24), alignment: .trailing)
                         .padding(.trailing, 8)
                         .padding(.bottom, 6)
+                        .transition(.offset(x: 8).combined(with: .opacity))
                 }
             }
             .frame(width: bubbleSize.width, height: bubbleSize.height)
+            .animation(.easeOut(duration: 0.16), value: showsAction)
         } else {
             bubbleContent
         }
