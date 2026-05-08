@@ -169,6 +169,24 @@ final class OpenPetsTests: XCTestCase {
     }
 
     @MainActor
+    func testStackedMessageLayoutUsesTightCardGap() {
+        let layout = OpenPetsMessageLayout.make(
+            messages: [
+                PetMessage(threadId: "thread-1", bubble: PetBubble(title: "One", detail: nil, indicator: .none)),
+                PetMessage(threadId: "thread-2", bubble: PetBubble(title: "Two", detail: nil, indicator: .none))
+            ],
+            hiddenMessageCount: 0,
+            containerWidth: 316,
+            spriteSize: CGSize(width: 112, height: 126),
+            messageAreaHeight: 108
+        )
+
+        XCTAssertEqual(layout.cardFrames.count, 2)
+        XCTAssertEqual(layout.cardFrames[1].minY - layout.cardFrames[0].maxY, OpenPetsMessageLayout.stackGap)
+        XCTAssertEqual(OpenPetsMessageLayout.stackGap, 8)
+    }
+
+    @MainActor
     func testMessageLayoutShowsToggleControlForSingleBubble() {
         let layout = OpenPetsMessageLayout.make(
             messages: [
@@ -213,6 +231,83 @@ final class OpenPetsTests: XCTestCase {
         )
 
         XCTAssertEqual(actionLayout.cardFrame.height, plainLayout.cardFrame.height)
+    }
+
+    @MainActor
+    func testMessageBubbleCapsDetailTextToTwoBodyLines() {
+        let oneLineDetail = PetBubble(
+            title: "Codex 5h",
+            detail: "Remaining: 99%",
+            indicator: .none
+        )
+        let twoLineDetail = PetBubble(
+            title: "Codex 5h",
+            detail: "Remaining: 99%\nReset: 9 May 2026 at 04:02 (in 4h)",
+            indicator: .none
+        )
+        let threeLineDetail = PetBubble(
+            title: "Codex 5h",
+            detail: "Remaining: 99%\nReset: 9 May 2026 at 04:02 (in 4h)\nSource: Codex",
+            indicator: .none
+        )
+
+        let oneLineLayout = OpenPetsMessageLayout.make(
+            messages: [PetMessage(threadId: "one-line", bubble: oneLineDetail)],
+            hiddenMessageCount: 0,
+            containerWidth: 316,
+            spriteSize: CGSize(width: 112, height: 126),
+            messageAreaHeight: 108
+        )
+        let twoLineLayout = OpenPetsMessageLayout.make(
+            messages: [PetMessage(threadId: "two-line", bubble: twoLineDetail)],
+            hiddenMessageCount: 0,
+            containerWidth: 316,
+            spriteSize: CGSize(width: 112, height: 126),
+            messageAreaHeight: 108
+        )
+        let threeLineLayout = OpenPetsMessageLayout.make(
+            messages: [PetMessage(threadId: "three-line", bubble: threeLineDetail)],
+            hiddenMessageCount: 0,
+            containerWidth: 316,
+            spriteSize: CGSize(width: 112, height: 126),
+            messageAreaHeight: 108
+        )
+
+        XCTAssertGreaterThan(twoLineLayout.cardFrame.height, oneLineLayout.cardFrame.height)
+        XCTAssertEqual(threeLineLayout.cardFrame.height, twoLineLayout.cardFrame.height)
+    }
+
+    @MainActor
+    func testPluginDetailBubbleDoesNotCapBodyLines() {
+        let twoLineDetail = PetBubble(
+            title: "Codex 5h",
+            detail: "Remaining: 99%\nReset: 9 May 2026 at 04:02 (in 4h)",
+            indicator: .none,
+            detailLineLimit: nil
+        )
+        let threeLineDetail = PetBubble(
+            title: "Codex 5h",
+            detail: "Remaining: 99%\nReset: 9 May 2026 at 04:02 (in 4h)\nSource: Codex",
+            indicator: .none,
+            detailLineLimit: nil
+        )
+
+        let twoLineLayout = OpenPetsMessageLayout.make(
+            messages: [PetMessage(threadId: "two-line", bubble: twoLineDetail)],
+            hiddenMessageCount: 0,
+            containerWidth: 316,
+            spriteSize: CGSize(width: 112, height: 126),
+            messageAreaHeight: 108
+        )
+        let threeLineLayout = OpenPetsMessageLayout.make(
+            messages: [PetMessage(threadId: "three-line", bubble: threeLineDetail)],
+            hiddenMessageCount: 0,
+            containerWidth: 316,
+            spriteSize: CGSize(width: 112, height: 126),
+            messageAreaHeight: 108
+        )
+
+        XCTAssertGreaterThan(threeLineLayout.cardFrame.height, twoLineLayout.cardFrame.height)
     }
 
     @MainActor

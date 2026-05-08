@@ -867,7 +867,8 @@ private final class PetHostController {
                 title: detail.title,
                 detail: rows.joined(separator: "\n"),
                 indicator: .none,
-                action: action
+                action: action,
+                detailLineLimit: nil
             ),
             threadId: "surface-detail.\(surface.update.surfaceID)",
             ttlSeconds: detail.ttlSeconds
@@ -1481,6 +1482,7 @@ struct PetBubble: Equatable {
     var detail: String?
     var indicator: PetBubbleIndicator
     var action: PetBubbleAction? = nil
+    var detailLineLimit: Int? = 2
 }
 
 struct PetBubbleAction: Equatable {
@@ -2258,6 +2260,7 @@ final class PetMessagePanelView: NSView {
             activeMessageCount: 0,
             layout: .empty,
             cardFrames: [],
+            messageAreaHeight: messageAreaHeight,
             onDismiss: { _ in },
             onToggle: {}
         ))
@@ -2403,6 +2406,7 @@ final class PetMessagePanelView: NSView {
             activeMessageCount: messageStack.activeCount,
             layout: layout,
             cardFrames: layout.cardFrames,
+            messageAreaHeight: messageAreaHeight,
             onDismiss: { [weak self] threadId in
                 self?.onDismissMessage?(threadId)
             },
@@ -2462,7 +2466,7 @@ struct OpenPetsMessageLayout {
     static let toggleDiameter: CGFloat = 34
     static let messageShadowOutset: CGFloat = 4
     static let verticalGap: CGFloat = 10
-    static let stackGap: CGFloat = 6
+    static let stackGap: CGFloat = 8
     static let toggleGapBelowCard: CGFloat = 4
     static let sideInset: CGFloat = 12
     static let maxCardWidth: CGFloat = 260
@@ -2801,6 +2805,7 @@ private struct OpenPetsMessageView: View {
     let activeMessageCount: Int
     let layout: OpenPetsMessageLayout
     let cardFrames: [CGRect]
+    let messageAreaHeight: CGFloat
     let onDismiss: (String) -> Void
     let onToggle: () -> Void
     @Environment(\.colorScheme) private var colorScheme
@@ -2811,7 +2816,11 @@ private struct OpenPetsMessageView: View {
                 ZStack(alignment: .topLeading) {
                     if !isCollapsed {
                         ForEach(Array(zip(messages, cardFrames)), id: \.0.threadId) { message, frame in
-                            OpenPetsDismissibleBubbleView(message: message, onDismiss: onDismiss)
+                            OpenPetsDismissibleBubbleView(
+                                message: message,
+                                messageAreaHeight: messageAreaHeight,
+                                onDismiss: onDismiss
+                            )
                                 .position(swiftUIPosition(for: frame))
                         }
                     }
@@ -2869,12 +2878,17 @@ private struct OpenPetsMessageView: View {
 
 private struct OpenPetsDismissibleBubbleView: View {
     let message: PetMessage
+    let messageAreaHeight: CGFloat
     let onDismiss: (String) -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var isHovered = false
 
     var body: some View {
-        OpenPetsBubbleContentView(bubble: message.bubble, showsAction: isHovered)
+        OpenPetsBubbleContentView(
+            bubble: message.bubble,
+            messageAreaHeight: messageAreaHeight,
+            showsAction: isHovered
+        )
             .overlay(alignment: .topLeading) {
                 if isHovered {
                     Button {
@@ -2918,6 +2932,7 @@ private struct OpenPetsDismissibleBubbleView: View {
 
 private struct OpenPetsBubbleContentView: View {
     let bubble: PetBubble
+    var messageAreaHeight: CGFloat = 84
     var showsAction = true
     @Environment(\.colorScheme) private var colorScheme
 
@@ -2949,7 +2964,7 @@ private struct OpenPetsBubbleContentView: View {
     }
 
     private var bubbleSize: CGSize {
-        Self.size(for: bubble)
+        Self.size(for: bubble, messageAreaHeight: messageAreaHeight)
     }
 
     private var bubbleContent: some View {
@@ -2966,7 +2981,7 @@ private struct OpenPetsBubbleContentView: View {
                         Text(detail)
                             .font(.system(size: 12.5, weight: .regular))
                             .foregroundStyle(.primary)
-                            .lineLimit(3)
+                            .lineLimit(bubble.detailLineLimit)
                             .truncationMode(.tail)
                             .fixedSize(horizontal: false, vertical: false)
                     }
@@ -2982,7 +2997,7 @@ private struct OpenPetsBubbleContentView: View {
         .padding(.leading, 14)
         .padding(.trailing, 12)
         .padding(.vertical, 6)
-        .frame(width: Self.size(for: bubble).width, height: Self.size(for: bubble).height)
+        .frame(width: bubbleSize.width, height: bubbleSize.height)
         .background(background)
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay {
@@ -2999,17 +3014,22 @@ private struct OpenPetsBubbleContentView: View {
             return CGSize(width: width, height: min(maxHeight, 44))
         }
 
-        let bodyLineCount = measuredBodyLineCount(for: detail, bubbleWidth: width)
+        let bodyLineCount = measuredBodyLineCount(
+            for: detail,
+            bubbleWidth: width,
+            lineLimit: bubble.detailLineLimit
+        )
         let oneLineBodyHeight: CGFloat = 56
         let bodyLineHeight: CGFloat = 16
         let desiredHeight = oneLineBodyHeight + CGFloat(bodyLineCount - 1) * bodyLineHeight
+        let height = bubble.detailLineLimit == nil ? desiredHeight : min(maxHeight, desiredHeight)
         return CGSize(
             width: width,
-            height: min(maxHeight, desiredHeight)
+            height: height
         )
     }
 
-    private static func measuredBodyLineCount(for detail: String, bubbleWidth: CGFloat) -> Int {
+    private static func measuredBodyLineCount(for detail: String, bubbleWidth: CGFloat, lineLimit: Int?) -> Int {
         let bodyWidth = max(1, bubbleWidth - 54)
         let font = NSFont.systemFont(ofSize: 12.5, weight: .regular)
         let paragraph = NSMutableParagraphStyle()
@@ -3023,7 +3043,11 @@ private struct OpenPetsBubbleContentView: View {
             ]
         )
         let bodyLineHeight: CGFloat = 15
-        return min(3, max(1, Int(ceil((rect.height - 0.5) / bodyLineHeight))))
+        let measuredLineCount = max(1, Int(ceil((rect.height - 0.5) / bodyLineHeight)))
+        guard let lineLimit else {
+            return measuredLineCount
+        }
+        return min(lineLimit, measuredLineCount)
     }
 
     private var background: some View {
@@ -3634,6 +3658,7 @@ private struct OpenPetsMessagingPreviewGallery: View {
                     activeMessageCount: activeMessageCount,
                     layout: layout,
                     cardFrames: layout.cardFrames,
+                    messageAreaHeight: 84,
                     onDismiss: { _ in },
                     onToggle: {}
                 )
