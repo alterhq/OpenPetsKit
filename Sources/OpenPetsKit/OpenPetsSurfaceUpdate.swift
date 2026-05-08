@@ -97,17 +97,20 @@ public struct OpenPetsSurfaceDetailData: Codable, Equatable, Sendable {
     public var rows: [OpenPetsSurfaceDetailRow]
     public var actionURL: String?
     public var actionLabel: String?
+    public var ttlSeconds: Double?
 
     public init(
         title: String,
         rows: [OpenPetsSurfaceDetailRow],
         actionURL: String? = nil,
-        actionLabel: String? = nil
+        actionLabel: String? = nil,
+        ttlSeconds: Double? = nil
     ) {
         self.title = title
         self.rows = rows
         self.actionURL = actionURL
         self.actionLabel = actionLabel
+        self.ttlSeconds = ttlSeconds
     }
 }
 

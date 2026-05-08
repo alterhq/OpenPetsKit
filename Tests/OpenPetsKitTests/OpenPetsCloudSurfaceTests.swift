@@ -29,7 +29,8 @@ final class OpenPetsCloudSurfaceTests: XCTestCase {
                     "label": "State",
                     "value": "Battery"
                   }
-                ]
+                ],
+                "ttlSeconds": 8
               }
             }
             """
@@ -44,6 +45,7 @@ final class OpenPetsCloudSurfaceTests: XCTestCase {
         XCTAssertEqual(update.tone, .normal)
         XCTAssertEqual(update.detail?.title, "Battery")
         XCTAssertEqual(update.detail?.rows.first?.label, "Charge")
+        XCTAssertEqual(update.detail?.ttlSeconds, 8)
     }
 
     func testCloudSurfaceUpdateRoundTrips() throws {
@@ -57,7 +59,7 @@ final class OpenPetsCloudSurfaceTests: XCTestCase {
             tone: .warning,
             detail: OpenPetsSurfaceDetailData(title: "Claude", rows: [
                 OpenPetsSurfaceDetailRow(label: "5h", value: "42%", tone: .warning)
-            ])
+            ], ttlSeconds: 8)
         )
 
         let data = try JSONEncoder().encode(update)

@@ -866,11 +866,11 @@ private final class PetHostController {
             PetBubble(
                 title: detail.title,
                 detail: rows.joined(separator: "\n"),
-                indicator: indicator(forSurfaceTone: surface.update.tone),
+                indicator: .none,
                 action: action
             ),
             threadId: "surface-detail.\(surface.update.surfaceID)",
-            ttlSeconds: nil
+            ttlSeconds: detail.ttlSeconds
         )
         play(.waving, loop: false, ttlSeconds: nil)
     }

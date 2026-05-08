@@ -53,6 +53,6 @@ By default, OpenPetsKit talks to the per-user socket at `/tmp/openpets-UID.sock`
 
 ## Plugin Surfaces
 
-OpenPetsKit includes the V1 cloud surface and pet reaction API used by OpenPets built-in plugins. Plugins emit semantic `surface.update` messages with an icon, value, optional detail rows, and optional `pet.reaction` updates. OpenPetsKit owns placement, rendering, hotspot behavior, and pet reaction animation selection.
+OpenPetsKit includes the V1 cloud surface and pet reaction API used by OpenPets built-in plugins. Plugins emit semantic `surface.update` messages with an icon, value, optional detail rows, optional detail TTL, and optional `pet.reaction` updates. OpenPetsKit owns placement, rendering, hotspot behavior, and pet reaction animation selection.
 
 The V1 plugin model is currently built-in and pull-request based in the OpenPets app. External plugin installation, subprocess execution, sandboxing, and per-plugin repository distribution are planned but not part of this package release.
