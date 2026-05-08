@@ -693,7 +693,8 @@ final class OpenPetsTests: XCTestCase {
             socketPath: "/tmp/openpets-test.sock",
             mcpHost: "0.0.0.0",
             mcpPort: 3999,
-            mcpEndpoint: "/custom-mcp"
+            mcpEndpoint: "/custom-mcp",
+            disabledPluginIDs: ["openpets.plugin.claude-code"]
         )
 
         try configuration.save(to: url)
@@ -715,6 +716,7 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(configuration.mcpPort, 3001)
         XCTAssertEqual(configuration.mcpEndpoint, "/mcp")
         XCTAssertEqual(configuration.activePetID, OpenPetsBundledPets.starcornID)
+        XCTAssertEqual(configuration.disabledPluginIDs, [])
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
     }
 
@@ -739,6 +741,61 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(configuration.mcpPort, 3001)
         XCTAssertEqual(configuration.mcpEndpoint, "/mcp")
         XCTAssertEqual(configuration.activePetID, OpenPetsBundledPets.starcornID)
+        XCTAssertEqual(configuration.disabledPluginIDs, [])
+    }
+
+    func testClaudeCodeQuotaCacheParsesStatusLinePayload() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let resetFiveHour = Int(now.addingTimeInterval(90 * 60).timeIntervalSince1970)
+        let resetSevenDay = Int(now.addingTimeInterval(3 * 24 * 60 * 60).timeIntervalSince1970)
+        let data = Data(
+            """
+            {
+              "rate_limits": {
+                "five_hour": {
+                  "used_percentage": 42,
+                  "resets_at": \(resetFiveHour)
+                },
+                "seven_day": {
+                  "used_percentage": 18,
+                  "resets_at": \(resetSevenDay)
+                }
+              }
+            }
+            """.utf8
+        )
+
+        let snapshot = try XCTUnwrap(OpenPetsClaudeCodeQuotaCache.snapshot(fromStatusLineJSON: data))
+
+        XCTAssertEqual(snapshot.fiveHour.usedPercentage, 42)
+        XCTAssertEqual(snapshot.fiveHour.durationMinutes, 300)
+        XCTAssertEqual(snapshot.sevenDay.usedPercentage, 18)
+        XCTAssertEqual(snapshot.sevenDay.durationMinutes, 10_080)
+    }
+
+    func testClaudeCodeQuotaCacheSavesAndLoadsFreshSnapshot() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cacheURL = directory.appendingPathComponent("claude-code-quota.json")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let expected = OpenPetsClaudeCodeQuotaSnapshot(
+            fiveHour: OpenPetsClaudeCodeQuotaWindow(
+                label: "5h",
+                usedPercentage: 42,
+                resetDate: now.addingTimeInterval(90 * 60),
+                durationMinutes: 300
+            ),
+            sevenDay: OpenPetsClaudeCodeQuotaWindow(
+                label: "7d",
+                usedPercentage: 18,
+                resetDate: now.addingTimeInterval(3 * 24 * 60 * 60),
+                durationMinutes: 10_080
+            )
+        )
+
+        try OpenPetsClaudeCodeQuotaCache.save(expected, to: cacheURL)
+
+        XCTAssertEqual(OpenPetsClaudeCodeQuotaCache.load(from: cacheURL, now: now), expected)
     }
 
     func testBundledStarcornPetLoads() throws {

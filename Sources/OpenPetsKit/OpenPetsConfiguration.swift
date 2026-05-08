@@ -7,6 +7,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
     public var mcpPort: Int
     public var mcpEndpoint: String
     public var activePetID: String
+    public var disabledPluginIDs: [String]
 
     public init(
         display: OpenPetsDisplayConfiguration = .default,
@@ -14,7 +15,8 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         mcpHost: String = "127.0.0.1",
         mcpPort: Int = 3001,
         mcpEndpoint: String = "/mcp",
-        activePetID: String = OpenPetsBundledPets.starcornID
+        activePetID: String = OpenPetsBundledPets.starcornID,
+        disabledPluginIDs: [String] = []
     ) {
         self.display = display
         self.socketPath = socketPath
@@ -22,6 +24,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         self.mcpPort = mcpPort
         self.mcpEndpoint = mcpEndpoint
         self.activePetID = activePetID
+        self.disabledPluginIDs = disabledPluginIDs
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -31,6 +34,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         case mcpPort
         case mcpEndpoint
         case activePetID
+        case disabledPluginIDs
     }
 
     public init(from decoder: Decoder) throws {
@@ -41,6 +45,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         mcpPort = try container.decodeIfPresent(Int.self, forKey: .mcpPort) ?? 3001
         mcpEndpoint = try container.decodeIfPresent(String.self, forKey: .mcpEndpoint) ?? "/mcp"
         activePetID = try container.decodeIfPresent(String.self, forKey: .activePetID) ?? OpenPetsBundledPets.starcornID
+        disabledPluginIDs = try container.decodeIfPresent([String].self, forKey: .disabledPluginIDs) ?? []
     }
 
     public static func load(
