@@ -262,7 +262,7 @@ public final class OpenPetsHostSession {
         _ = setSurfaceUpdates([])
     }
 
-    public func revealSurfacePositions(surfaceIDs: Set<String>? = nil, duration: TimeInterval = 5.8) {
+    public func revealSurfacePositions(surfaceIDs: Set<String>? = nil, duration: TimeInterval = 6.2) {
         controller?.revealSurfacePositions(surfaceIDs: surfaceIDs, duration: duration)
     }
 
@@ -1918,10 +1918,10 @@ struct OpenPetsSurfaceRevealPhase: Equatable {
             targetRevealProgress = 0
         } else if progress < 0.075 {
             targetRevealProgress = Self.smoothed((progress - 0.04) / 0.035)
-        } else if progress < 0.985 {
+        } else if progress < 0.88 {
             targetRevealProgress = 1
         } else {
-            targetRevealProgress = max(0, 1 - (progress - 0.985) / 0.015)
+            targetRevealProgress = Self.smoothed(max(0, 1 - (progress - 0.88) / 0.12))
         }
     }
 

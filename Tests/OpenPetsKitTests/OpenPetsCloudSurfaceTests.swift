@@ -188,9 +188,14 @@ final class OpenPetsCloudSurfaceTests: XCTestCase {
         XCTAssertEqual(hold.beamOpacity, 0, accuracy: 0.001)
         XCTAssertEqual(hold.targetRevealProgress, 1, accuracy: 0.001)
 
-        let lateHold = OpenPetsSurfaceRevealPhase(progress: 0.97)
+        let lateHold = OpenPetsSurfaceRevealPhase(progress: 0.86)
         XCTAssertEqual(lateHold.beamOpacity, 0, accuracy: 0.001)
         XCTAssertEqual(lateHold.targetRevealProgress, 1, accuracy: 0.001)
+
+        let fading = OpenPetsSurfaceRevealPhase(progress: 0.94)
+        XCTAssertEqual(fading.beamOpacity, 0, accuracy: 0.001)
+        XCTAssertGreaterThan(fading.targetRevealProgress, 0)
+        XCTAssertLessThan(fading.targetRevealProgress, 1)
 
         let end = OpenPetsSurfaceRevealPhase(progress: 1)
         XCTAssertEqual(end.beamProgress, 1, accuracy: 0.001)
