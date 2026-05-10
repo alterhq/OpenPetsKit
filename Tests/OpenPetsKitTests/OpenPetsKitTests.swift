@@ -340,6 +340,27 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(workspace.activationValues, [true, true])
     }
 
+    func testInternalActionURLPostsNotificationInsteadOfOpeningWorkspace() throws {
+        let workspace = FakeWorkspaceOpen()
+        let opener = OpenPetsActionURLOpener(workspaceOpen: workspace.open)
+        let url = try XCTUnwrap(URL(string: OpenPetsInternalActionURL.weatherLocationSettings))
+        let notificationExpectation = expectation(description: "internal action notification")
+        let observer = NotificationCenter.default.addObserver(
+            forName: .openPetsActionURLRequested,
+            object: nil,
+            queue: nil
+        ) { notification in
+            XCTAssertEqual(notification.userInfo?["url"] as? URL, url)
+            notificationExpectation.fulfill()
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        opener.open(url)
+
+        wait(for: [notificationExpectation], timeout: 1)
+        XCTAssertTrue(workspace.openedURLs.isEmpty)
+    }
+
     func testSpriteFrameStoreReusesCachedAssets() throws {
         let image = try makeAlphaTestImage(width: 2, height: 1, alphas: [0, 255])
         let store = PetSpriteFrameStore(frames: [.idle: [image]], spriteSize: CGSize(width: 20, height: 10))
@@ -793,6 +814,7 @@ final class OpenPetsTests: XCTestCase {
                 "small-pet": 0.5,
                 "large-pet": 1.75
             ],
+            enabledPluginIDs: ["openpets.plugin.weather"],
             disabledPluginIDs: ["openpets.plugin.claude-code"]
         )
 
@@ -816,6 +838,7 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(configuration.mcpEndpoint, "/mcp")
         XCTAssertEqual(configuration.activePetID, OpenPetsBundledPets.starcornID)
         XCTAssertEqual(configuration.petScalesByID, [:])
+        XCTAssertEqual(configuration.enabledPluginIDs, [])
         XCTAssertEqual(configuration.disabledPluginIDs, [])
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
     }
@@ -842,6 +865,7 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(configuration.mcpEndpoint, "/mcp")
         XCTAssertEqual(configuration.activePetID, OpenPetsBundledPets.starcornID)
         XCTAssertEqual(configuration.petScalesByID, [:])
+        XCTAssertEqual(configuration.enabledPluginIDs, [])
         XCTAssertEqual(configuration.disabledPluginIDs, [])
     }
 

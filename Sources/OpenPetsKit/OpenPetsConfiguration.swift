@@ -9,6 +9,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
     public var mcpEndpoint: String
     public var activePetID: String
     public var petScalesByID: [String: CGFloat]
+    public var enabledPluginIDs: [String]
     public var disabledPluginIDs: [String]
 
     public init(
@@ -19,6 +20,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         mcpEndpoint: String = "/mcp",
         activePetID: String = OpenPetsBundledPets.starcornID,
         petScalesByID: [String: CGFloat] = [:],
+        enabledPluginIDs: [String] = [],
         disabledPluginIDs: [String] = []
     ) {
         self.display = display
@@ -28,6 +30,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         self.mcpEndpoint = mcpEndpoint
         self.activePetID = activePetID
         self.petScalesByID = petScalesByID
+        self.enabledPluginIDs = enabledPluginIDs
         self.disabledPluginIDs = disabledPluginIDs
     }
 
@@ -39,6 +42,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         case mcpEndpoint
         case activePetID
         case petScalesByID
+        case enabledPluginIDs
         case disabledPluginIDs
     }
 
@@ -51,6 +55,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         mcpEndpoint = try container.decodeIfPresent(String.self, forKey: .mcpEndpoint) ?? "/mcp"
         activePetID = try container.decodeIfPresent(String.self, forKey: .activePetID) ?? OpenPetsBundledPets.starcornID
         petScalesByID = try container.decodeIfPresent([String: CGFloat].self, forKey: .petScalesByID) ?? [:]
+        enabledPluginIDs = try container.decodeIfPresent([String].self, forKey: .enabledPluginIDs) ?? []
         disabledPluginIDs = try container.decodeIfPresent([String].self, forKey: .disabledPluginIDs) ?? []
     }
 

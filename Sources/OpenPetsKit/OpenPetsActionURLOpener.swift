@@ -1,6 +1,16 @@
 import AppKit
 import Foundation
 
+public extension Notification.Name {
+    static let openPetsActionURLRequested = Notification.Name("OpenPetsActionURLRequested")
+}
+
+public enum OpenPetsInternalActionURL {
+    public static let scheme = "openpets"
+    public static let host = "action"
+    public static let weatherLocationSettings = "openpets://action/weather-location-settings"
+}
+
 struct OpenPetsActionURLOpener {
     typealias Completion = @Sendable (NSRunningApplication?, Error?) -> Void
     typealias WorkspaceOpen = @Sendable (URL, NSWorkspace.OpenConfiguration, @escaping Completion) -> Void
@@ -12,6 +22,15 @@ struct OpenPetsActionURLOpener {
     }
 
     func open(_ url: URL) {
+        if url.scheme == OpenPetsInternalActionURL.scheme, url.host == OpenPetsInternalActionURL.host {
+            NotificationCenter.default.post(
+                name: .openPetsActionURLRequested,
+                object: nil,
+                userInfo: ["url": url]
+            )
+            return
+        }
+
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         let urlDescription = Self.traceDescription(for: url)
