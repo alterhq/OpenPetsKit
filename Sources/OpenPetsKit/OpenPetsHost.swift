@@ -42,6 +42,8 @@ public struct OpenPetsHostConfiguration: Sendable {
     }
 }
 
+public typealias OpenPetsSurfaceContextMenuProvider = @MainActor (OpenPetsResolvedSurface) -> NSMenu?
+
 struct PetLaunchMotion {
     struct Step {
         var origin: CGPoint
@@ -187,6 +189,7 @@ public final class OpenPetsHostSession {
     public private(set) var configuration: OpenPetsHostConfiguration
     public let terminatesApplicationOnShutdown: Bool
     private let contextMenuProvider: (@MainActor () -> NSMenu?)?
+    private let surfaceContextMenuProvider: OpenPetsSurfaceContextMenuProvider?
     private var controller: PetHostController?
     private var server: OpenPetsServer?
 
@@ -201,11 +204,13 @@ public final class OpenPetsHostSession {
     public init(
         configuration: OpenPetsHostConfiguration,
         terminatesApplicationOnShutdown: Bool = false,
-        contextMenuProvider: (@MainActor () -> NSMenu?)? = nil
+        contextMenuProvider: (@MainActor () -> NSMenu?)? = nil,
+        surfaceContextMenuProvider: OpenPetsSurfaceContextMenuProvider? = nil
     ) {
         self.configuration = configuration
         self.terminatesApplicationOnShutdown = terminatesApplicationOnShutdown
         self.contextMenuProvider = contextMenuProvider
+        self.surfaceContextMenuProvider = surfaceContextMenuProvider
     }
 
     public func start() throws {
@@ -216,7 +221,8 @@ public final class OpenPetsHostSession {
             petBundle: petBundle,
             display: configuration.display,
             positionStore: PetPositionStore(url: configuration.positionStoreURL),
-            contextMenuProvider: contextMenuProvider
+            contextMenuProvider: contextMenuProvider,
+            surfaceContextMenuProvider: surfaceContextMenuProvider
         )
         let bridge = PetHostCommandBridge(session: self)
         let server = OpenPetsServer(socketPath: configuration.socketPath) { command in
@@ -254,6 +260,15 @@ public final class OpenPetsHostSession {
 
     public func clearSurfaceUpdates() {
         _ = setSurfaceUpdates([])
+    }
+
+    public func revealSurfacePositions(surfaceIDs: Set<String>? = nil, duration: TimeInterval = 5.8) {
+        controller?.revealSurfacePositions(surfaceIDs: surfaceIDs, duration: duration)
+    }
+
+    @discardableResult
+    public func showSurfaceDetail(forSurfaceID surfaceID: String) -> Bool {
+        controller?.showSurfaceDetail(forSurfaceID: surfaceID) ?? false
     }
 
     public func setPetReactionUpdates(_ updates: [OpenPetsPetReactionUpdate]) {
@@ -523,7 +538,9 @@ private final class PetHostController {
     private var ttlWorkItem: DispatchWorkItem?
     private var messageWorkItems: [String: DispatchWorkItem] = [:]
     private var reactionWorkItems: [String: DispatchWorkItem] = [:]
+    private var surfaceRevealTask: Task<Void, Never>?
     private var petReactionUpdatesByID: [String: OpenPetsPetReactionUpdate] = [:]
+    private var resolvedSurfaces: [OpenPetsResolvedSurface] = []
     private var currentAnimation: PetAnimation = .idle
     private var currentReactionKind: OpenPetsPetReactionKind?
     private var currentFrameIndex = 0
@@ -541,7 +558,8 @@ private final class PetHostController {
         petBundle: PetBundle,
         display: OpenPetsDisplayConfiguration,
         positionStore: PetPositionStore,
-        contextMenuProvider: (@MainActor () -> NSMenu?)? = nil
+        contextMenuProvider: (@MainActor () -> NSMenu?)? = nil,
+        surfaceContextMenuProvider: OpenPetsSurfaceContextMenuProvider? = nil
     ) throws {
         self.petBundle = petBundle
         self.positionStore = positionStore
@@ -664,6 +682,15 @@ private final class PetHostController {
         surfaceView.onSelectSurface = { [weak self] surface in
             self?.showSurfaceDetail(for: surface)
         }
+        surfaceView.onContextMenuSurface = { [weak self] surface, screenPoint in
+            guard
+                let self,
+                let menu = surfaceContextMenuProvider?(surface)
+            else {
+                return
+            }
+            self.surfaceView.showContextMenu(menu, atScreenPoint: screenPoint)
+        }
         installSurfaceMouseTracking()
         screenParametersObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -682,7 +709,7 @@ private final class PetHostController {
         window.orderFrontRegardless()
         if surfaceView.hasVisibleSurfaces {
             positionSurfacePanel()
-            surfacePanel.orderFrontRegardless()
+            orderSurfacePanelBehindPet()
         }
         if messageView.hasVisibleMessages {
             positionMessagePanel()
@@ -703,6 +730,8 @@ private final class PetHostController {
         ttlWorkItem = nil
         cancelMessageWorkItems()
         cancelReactionWorkItems()
+        surfaceRevealTask?.cancel()
+        surfaceRevealTask = nil
         removeSurfaceMouseTracking()
         surfacePanel.orderOut(nil)
         surfacePanel.close()
@@ -766,18 +795,57 @@ private final class PetHostController {
         }
     }
 
+    func revealSurfacePositions(surfaceIDs: Set<String>?, duration: TimeInterval) {
+        guard surfaceView.hasVisibleSurfaces else { return }
+
+        surfaceRevealTask?.cancel()
+        surfaceView.startSurfaceReveal(targetSurfaceIDs: surfaceIDs)
+        orderSurfacePanelBehindPet()
+        play(.waving, loop: false, ttlSeconds: nil)
+
+        let revealDuration = max(0.1, duration)
+        surfaceRevealTask = Task { @MainActor [weak self] in
+            let frameInterval = UInt64(33_000_000)
+            let startedAt = Date()
+            while !Task.isCancelled {
+                let elapsed = Date().timeIntervalSince(startedAt)
+                let progress = min(1, CGFloat(elapsed / revealDuration))
+                self?.surfaceView.setSurfaceRevealProgress(progress)
+                guard progress < 1 else { break }
+                try? await Task.sleep(nanoseconds: frameInterval)
+            }
+            if !Task.isCancelled {
+                self?.surfaceView.clearSurfaceReveal()
+                self?.surfaceRevealTask = nil
+            }
+        }
+    }
+
     @discardableResult
     func setSurfaceUpdates(_ updates: [OpenPetsSurfaceUpdate]) -> [OpenPetsResolvedSurface] {
         let resolvedSurfaces = surfaceResolver.resolve(updates)
+        self.resolvedSurfaces = resolvedSurfaces
         surfaceView.set(resolvedSurfaces: resolvedSurfaces)
         if surfaceView.hasVisibleSurfaces {
             positionSurfacePanel()
-            surfacePanel.orderFrontRegardless()
+            orderSurfacePanelBehindPet()
             updateSurfaceCursor()
         } else {
+            surfaceRevealTask?.cancel()
+            surfaceRevealTask = nil
+            surfaceView.clearSurfaceReveal()
             surfacePanel.orderOut(nil)
         }
         return resolvedSurfaces
+    }
+
+    @discardableResult
+    func showSurfaceDetail(forSurfaceID surfaceID: String) -> Bool {
+        guard let surface = resolvedSurfaces.first(where: { $0.update.surfaceID == surfaceID }) else {
+            return false
+        }
+
+        return showSurfaceDetail(for: surface)
     }
 
     func setPetReactionUpdates(_ updates: [OpenPetsPetReactionUpdate]) {
@@ -845,8 +913,9 @@ private final class PetHostController {
         DispatchQueue.main.asyncAfter(deadline: .now() + ttlSeconds, execute: workItem)
     }
 
-    private func showSurfaceDetail(for surface: OpenPetsResolvedSurface) {
-        guard let detail = surface.update.detail else { return }
+    @discardableResult
+    private func showSurfaceDetail(for surface: OpenPetsResolvedSurface) -> Bool {
+        guard let detail = surface.update.detail else { return false }
         let rows = detail.rows.map { row in
             if row.label.isEmpty {
                 return row.value
@@ -874,6 +943,7 @@ private final class PetHostController {
             ttlSeconds: detail.ttlSeconds
         )
         play(.waving, loop: false, ttlSeconds: nil)
+        return true
     }
 
     private func clearBubble(threadId: String) {
@@ -1169,8 +1239,12 @@ private final class PetHostController {
         updateSurfaceCursor()
     }
 
+    private func orderSurfacePanelBehindPet() {
+        surfacePanel.order(.below, relativeTo: window.windowNumber)
+    }
+
     private func installSurfaceMouseTracking() {
-        let eventMask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseDown]
+        let eventMask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseDown, .rightMouseDown]
         surfaceGlobalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { [weak self] event in
             Task { @MainActor in
                 self?.handleSurfaceMouseEvent(event)
@@ -1197,8 +1271,14 @@ private final class PetHostController {
 
     private func handleSurfaceMouseEvent(_ event: NSEvent) {
         updateSurfaceCursor(screenPoint: NSEvent.mouseLocation)
-        guard event.type == .leftMouseDown else { return }
-        surfaceView.selectSurface(atScreenPoint: NSEvent.mouseLocation)
+        switch event.type {
+        case .leftMouseDown:
+            surfaceView.selectSurface(atScreenPoint: NSEvent.mouseLocation)
+        case .rightMouseDown:
+            surfaceView.showContextMenu(atScreenPoint: NSEvent.mouseLocation)
+        default:
+            break
+        }
     }
 
     private func updateSurfaceCursor(screenPoint: CGPoint = NSEvent.mouseLocation) {
@@ -1533,6 +1613,10 @@ final class PetSurfacePanelView: NSView {
     private static let surfaceOutset: CGFloat = 184
 
     var onSelectSurface: ((OpenPetsResolvedSurface) -> Void)?
+    var onContextMenuSurface: ((OpenPetsResolvedSurface, CGPoint) -> Void)?
+    var contextMenuPresenter: (NSMenu, CGPoint, PetSurfacePanelView) -> Void = { menu, screenPoint, view in
+        menu.popUp(positioning: nil, at: view.localPoint(forScreenPoint: screenPoint), in: view)
+    }
 
     var hasVisibleSurfaces: Bool {
         !visibleSurfaces.isEmpty
@@ -1541,12 +1625,14 @@ final class PetSurfacePanelView: NSView {
     private var visibleSurfaces: [OpenPetsResolvedSurface] = []
     private var currentPetFrameInPanel: CGRect = .zero
     private var cursorPoint: CGPoint?
+    private var surfaceRevealState: OpenPetsSurfaceRevealState?
     private var hotspotFrames: [String: CGRect] = [:]
     private let palette: OpenPetsPetSurfacePalette
     private lazy var hostingView = SurfaceHostingView(rootView: OpenPetsSurfaceOverlayView(
         resolvedSurfaces: [],
         petFrame: .zero,
         cursorPoint: nil,
+        revealState: nil,
         hotspotFrames: [:],
         palette: palette
     ))
@@ -1613,6 +1699,28 @@ final class PetSurfacePanelView: NSView {
         updateHostingView()
     }
 
+    func startSurfaceReveal(targetSurfaceIDs: Set<String>?) {
+        let targets = targetSurfaceIDs ?? Set(visibleSurfaces.map(\.update.surfaceID))
+        surfaceRevealState = OpenPetsSurfaceRevealState(
+            progress: 0,
+            targetSurfaceIDs: targets,
+            startOffsetsBySurfaceID: OpenPetsSurfaceRevealState.startOffsets(for: targets)
+        )
+        updateHostingView()
+    }
+
+    func setSurfaceRevealProgress(_ progress: CGFloat) {
+        guard var surfaceRevealState else { return }
+        surfaceRevealState.progress = max(0, min(progress, 1))
+        self.surfaceRevealState = surfaceRevealState
+        updateHostingView()
+    }
+
+    func clearSurfaceReveal() {
+        surfaceRevealState = nil
+        updateHostingView()
+    }
+
     @discardableResult
     func selectSurface(atScreenPoint screenPoint: CGPoint) -> Bool {
         guard let target = hotspotTarget(at: surfacePoint(forLocalPoint: localPoint(forScreenPoint: screenPoint))) else { return false }
@@ -1620,11 +1728,23 @@ final class PetSurfacePanelView: NSView {
         return true
     }
 
+    @discardableResult
+    func showContextMenu(atScreenPoint screenPoint: CGPoint) -> Bool {
+        guard let target = hotspotTarget(at: surfacePoint(forLocalPoint: localPoint(forScreenPoint: screenPoint))) else { return false }
+        onContextMenuSurface?(target, screenPoint)
+        return true
+    }
+
+    func showContextMenu(_ menu: NSMenu, atScreenPoint screenPoint: CGPoint) {
+        contextMenuPresenter(menu, screenPoint, self)
+    }
+
     private func updateHostingView() {
         hostingView.rootView = OpenPetsSurfaceOverlayView(
             resolvedSurfaces: visibleSurfaces,
             petFrame: currentPetFrameInPanel,
             cursorPoint: cursorPoint,
+            revealState: surfaceRevealState,
             hotspotFrames: hotspotFrames,
             palette: palette
         )
@@ -1667,6 +1787,7 @@ private struct OpenPetsSurfaceOverlayView: View {
     let resolvedSurfaces: [OpenPetsResolvedSurface]
     let petFrame: CGRect
     let cursorPoint: CGPoint?
+    let revealState: OpenPetsSurfaceRevealState?
     let hotspotFrames: [String: CGRect]
     let palette: OpenPetsPetSurfacePalette
 
@@ -1680,6 +1801,12 @@ private struct OpenPetsSurfaceOverlayView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
+                if let revealGeometry {
+                    OpenPetsSurfaceRevealView(
+                        geometry: revealGeometry,
+                        palette: palette
+                    )
+                }
                 ForEach(Array(overlaySurfaces.enumerated()), id: \.offset) { _, resolved in
                     overlayView(for: resolved, in: geometry.size)
                 }
@@ -1687,6 +1814,17 @@ private struct OpenPetsSurfaceOverlayView: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .allowsHitTesting(false)
+    }
+
+    private var revealGeometry: OpenPetsSurfaceRevealGeometry? {
+        guard let revealState else { return nil }
+        let targetFrames = hotspotFrames.filter { revealState.targetSurfaceIDs.contains($0.key) }
+        return OpenPetsSurfaceRevealGeometry(
+            progress: revealState.progress,
+            petFrame: petFrame,
+            targetFrames: targetFrames,
+            startOffsetsBySurfaceID: revealState.startOffsetsBySurfaceID
+        )
     }
 
     @ViewBuilder
@@ -1710,13 +1848,238 @@ private struct OpenPetsSurfaceOverlayView: View {
     }
 
     private func visibility(for resolved: OpenPetsResolvedSurface) -> OpenPetsHotspotVisibility {
+        let targetRevealProgress: CGFloat
+        if let revealState, revealState.targetSurfaceIDs.contains(resolved.update.surfaceID) {
+            targetRevealProgress = OpenPetsSurfaceRevealPhase(
+                progress: revealState.progress(for: resolved.update.surfaceID)
+            ).targetRevealProgress
+        } else {
+            targetRevealProgress = 0
+        }
+
         guard
             let cursorPoint,
             let frame = hotspotFrames[resolved.update.surfaceID]
         else {
-            return OpenPetsHotspotVisibility(distance: .infinity)
+            return OpenPetsHotspotVisibility(distance: .infinity, positionRevealProgress: targetRevealProgress)
         }
-        return OpenPetsHotspotVisibility(distance: OpenPetsSurfaceHotspotLayout.hotspotDistance(from: cursorPoint, to: frame))
+        return OpenPetsHotspotVisibility(
+            distance: OpenPetsSurfaceHotspotLayout.hotspotDistance(from: cursorPoint, to: frame),
+            positionRevealProgress: targetRevealProgress
+        )
+    }
+}
+
+struct OpenPetsSurfaceRevealState: Equatable {
+    static let maximumStartOffset: CGFloat = 0.04
+
+    var progress: CGFloat
+    var targetSurfaceIDs: Set<String>
+
+    var startOffsetsBySurfaceID: [String: CGFloat] = [:]
+
+    func progress(for surfaceID: String) -> CGFloat {
+        let offset = startOffsetsBySurfaceID[surfaceID] ?? 0
+        guard offset > 0 else { return progress }
+        return max(0, min((progress - offset) / (1 - Self.maximumStartOffset), 1))
+    }
+
+    static func startOffsets(for targetSurfaceIDs: Set<String>) -> [String: CGFloat] {
+        guard targetSurfaceIDs.count > 1 else {
+            return Dictionary(uniqueKeysWithValues: targetSurfaceIDs.map { ($0, 0) })
+        }
+
+        let shuffledSurfaceIDs = targetSurfaceIDs.shuffled()
+        let step = maximumStartOffset / CGFloat(shuffledSurfaceIDs.count - 1)
+        return Dictionary(uniqueKeysWithValues: shuffledSurfaceIDs.enumerated().map { index, surfaceID in
+            (surfaceID, CGFloat(index) * step)
+        })
+    }
+}
+
+struct OpenPetsSurfaceRevealPhase: Equatable {
+    var beamProgress: CGFloat
+    var beamOpacity: CGFloat
+    var targetRevealProgress: CGFloat
+
+    init(progress: CGFloat) {
+        let progress = max(0, min(progress, 1))
+        beamProgress = Self.smoothed(min(progress / 0.1, 1))
+
+        if progress < 0.015 {
+            beamOpacity = (progress / 0.015) * 0.62
+        } else if progress > 0.16 {
+            beamOpacity = max(0, 1 - (progress - 0.16) / 0.06) * 0.62
+        } else {
+            beamOpacity = 0.62
+        }
+
+        if progress < 0.04 {
+            targetRevealProgress = 0
+        } else if progress < 0.075 {
+            targetRevealProgress = Self.smoothed((progress - 0.04) / 0.035)
+        } else if progress < 0.985 {
+            targetRevealProgress = 1
+        } else {
+            targetRevealProgress = max(0, 1 - (progress - 0.985) / 0.015)
+        }
+    }
+
+    private static func smoothed(_ progress: CGFloat) -> CGFloat {
+        progress * progress * (3 - 2 * progress)
+    }
+}
+
+struct OpenPetsSurfaceRevealGeometry: Equatable {
+    var progress: CGFloat
+    var petFrame: CGRect
+    var targetFrames: [String: CGRect]
+    var startOffsetsBySurfaceID: [String: CGFloat] = [:]
+
+    var isVisible: Bool {
+        targetFrames.keys.contains { surfaceID in
+            let phase = phase(for: surfaceID)
+            return phase.beamOpacity > 0
+        }
+    }
+
+    var origin: CGPoint {
+        CGPoint(x: petFrame.midX, y: petFrame.midY)
+    }
+
+    var targetCenters: [String: CGPoint] {
+        Dictionary(uniqueKeysWithValues: targetFrames.map { surfaceID, frame in
+            (surfaceID, CGPoint(x: frame.midX, y: frame.midY))
+        })
+    }
+
+    func phase(for surfaceID: String) -> OpenPetsSurfaceRevealPhase {
+        let offset = startOffsetsBySurfaceID[surfaceID] ?? 0
+        let localProgress: CGFloat
+        if offset > 0 {
+            localProgress = max(0, min((progress - offset) / (1 - OpenPetsSurfaceRevealState.maximumStartOffset), 1))
+        } else {
+            localProgress = progress
+        }
+        return OpenPetsSurfaceRevealPhase(progress: localProgress)
+    }
+
+    func beamPoint(for target: CGPoint, surfaceID: String) -> CGPoint {
+        let phase = phase(for: surfaceID)
+        return CGPoint(
+            x: origin.x + (target.x - origin.x) * phase.beamProgress,
+            y: origin.y + (target.y - origin.y) * phase.beamProgress
+        )
+    }
+}
+
+private struct OpenPetsSurfaceRevealView: View {
+    let geometry: OpenPetsSurfaceRevealGeometry
+    let palette: OpenPetsPetSurfacePalette
+
+    var body: some View {
+        if geometry.isVisible {
+            ZStack {
+                ForEach(geometry.targetCenters.keys.sorted(), id: \.self) { surfaceID in
+                    if let target = geometry.targetCenters[surfaceID] {
+                        let phase = geometry.phase(for: surfaceID)
+                        OpenPetsSurfaceBeamView(
+                            origin: geometry.origin,
+                            target: target,
+                            currentPoint: geometry.beamPoint(for: target, surfaceID: surfaceID),
+                            phase: phase,
+                            palette: palette
+                        )
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct OpenPetsSurfaceBeamView: View {
+    let origin: CGPoint
+    let target: CGPoint
+    let currentPoint: CGPoint
+    let phase: OpenPetsSurfaceRevealPhase
+    let palette: OpenPetsPetSurfacePalette
+
+    var body: some View {
+        ZStack {
+            if beamLength > 1 {
+                OpenPetsHotspotStyleCloudView(
+                    palette: palette,
+                    width: max(42, beamLength + 18),
+                    height: 24,
+                    blurScale: 0.72
+                )
+                .opacity(phase.beamOpacity * approachOpacity * 0.22)
+                .rotationEffect(beamAngle)
+                .position(beamMidpoint)
+            }
+
+            ForEach(Array(trailSamples.enumerated()), id: \.offset) { index, sampleProgress in
+                OpenPetsHotspotStyleCloudView(
+                    palette: palette,
+                    width: 38 - CGFloat(index) * 2.2,
+                    height: 18 - CGFloat(index) * 0.9,
+                    blurScale: 0.68
+                )
+                .opacity(trailOpacity(for: index, sampleProgress: sampleProgress))
+                .position(point(at: sampleProgress))
+            }
+
+            OpenPetsBeamOrbView(palette: palette, opacity: phase.beamOpacity * approachOpacity * 0.68)
+                .position(currentPoint)
+        }
+    }
+
+    private var trailSamples: [CGFloat] {
+        let head = phase.beamProgress
+        return (0..<7).map { index in
+            max(0, head - CGFloat(index) * 0.075)
+        }.filter { $0 > 0 }
+    }
+
+    private var beamLength: CGFloat {
+        hypot(currentPoint.x - origin.x, currentPoint.y - origin.y)
+    }
+
+    private var beamAngle: Angle {
+        Angle(radians: atan2(currentPoint.y - origin.y, currentPoint.x - origin.x))
+    }
+
+    private var beamMidpoint: CGPoint {
+        CGPoint(x: (origin.x + currentPoint.x) / 2, y: (origin.y + currentPoint.y) / 2)
+    }
+
+    private var approachOpacity: CGFloat {
+        max(0, 1 - max(0, phase.beamProgress - 0.82) / 0.18)
+    }
+
+    private func point(at progress: CGFloat) -> CGPoint {
+        CGPoint(
+            x: origin.x + (target.x - origin.x) * progress,
+            y: origin.y + (target.y - origin.y) * progress
+        )
+    }
+
+    private func trailOpacity(for index: Int, sampleProgress: CGFloat) -> CGFloat {
+        let distanceFromHead = max(0, phase.beamProgress - sampleProgress)
+        let tailFade = max(0, 1 - distanceFromHead / 0.5)
+        let indexFade = max(0.25, 1 - CGFloat(index) * 0.11)
+        return phase.beamOpacity * approachOpacity * tailFade * indexFade * 0.38
+    }
+}
+
+private struct OpenPetsBeamOrbView: View {
+    let palette: OpenPetsPetSurfacePalette
+    let opacity: CGFloat
+
+    var body: some View {
+        OpenPetsHotspotStyleCloudView(palette: palette, width: 52, height: 24, blurScale: 0.78)
+        .opacity(opacity)
     }
 }
 
@@ -1729,24 +2092,25 @@ struct OpenPetsHotspotVisibility: Equatable {
     var opacity: CGFloat
     var compactProgress: CGFloat
 
-    init(distance: CGFloat) {
+    init(distance: CGFloat, positionRevealProgress: CGFloat = 0) {
+        let positionRevealProgress = max(0, min(positionRevealProgress, 1))
         if distance.isInfinite || distance >= Self.revealDistance {
-            opacity = Self.defaultAlpha
-            compactProgress = 0
+            opacity = Self.defaultAlpha + positionRevealProgress * (1 - Self.defaultAlpha)
+            compactProgress = positionRevealProgress
             return
         }
 
         let revealProgress = Self.smoothed(1 - max(0, min(distance / Self.revealDistance, 1)))
-        opacity = Self.defaultAlpha + revealProgress * (1 - Self.defaultAlpha)
+        opacity = Self.defaultAlpha + max(revealProgress, positionRevealProgress) * (1 - Self.defaultAlpha)
 
         if distance <= Self.fullDistance {
             compactProgress = 1
         } else if distance >= Self.compactDistance {
-            compactProgress = 0
+            compactProgress = positionRevealProgress
         } else {
-            compactProgress = Self.smoothed(
+            compactProgress = max(positionRevealProgress, Self.smoothed(
                 1 - ((distance - Self.fullDistance) / (Self.compactDistance - Self.fullDistance))
-            )
+            ))
         }
     }
 
@@ -2067,7 +2431,7 @@ private struct OpenPetsCloudHotspotSurfaceView: View {
             hiddenGlow
                 .opacity(1 - visibility.compactProgress)
 
-            cloudBackground
+            OpenPetsHotspotStyleCloudView(palette: palette)
                 .opacity(visibility.compactProgress)
 
             HStack(spacing: 5) {
@@ -2101,29 +2465,37 @@ private struct OpenPetsCloudHotspotSurfaceView: View {
             }
     }
 
-    private var cloudBackground: some View {
+}
+
+private struct OpenPetsHotspotStyleCloudView: View {
+    let palette: OpenPetsPetSurfacePalette
+    var width: CGFloat = 66
+    var height: CGFloat = 30
+    var blurScale: CGFloat = 1
+
+    var body: some View {
         ZStack {
             Ellipse()
                 .fill(palette.accent.vividColor)
-                .frame(width: 66, height: 30)
-                .blur(radius: 13)
-                .offset(x: -18, y: -1)
+                .frame(width: width, height: height)
+                .blur(radius: 13 * blurScale)
+                .offset(x: -width * 0.27, y: -height * 0.03)
                 .blendMode(.screen)
             Ellipse()
                 .fill(palette.primary.vividColor)
-                .frame(width: 66, height: 30)
-                .blur(radius: 13)
-                .offset(x: 18, y: 1)
+                .frame(width: width, height: height)
+                .blur(radius: 13 * blurScale)
+                .offset(x: width * 0.27, y: height * 0.03)
                 .blendMode(.screen)
             Ellipse()
                 .fill(palette.highlight.vividColor)
-                .frame(width: 42, height: 24)
-                .blur(radius: 12)
-                .offset(x: -2, y: 0)
+                .frame(width: width * 0.64, height: height * 0.8)
+                .blur(radius: 12 * blurScale)
+                .offset(x: -width * 0.03, y: 0)
                 .blendMode(.screen)
         }
         .compositingGroup()
-        .blur(radius: 1)
+        .blur(radius: blurScale)
     }
 }
 
@@ -2976,6 +3348,8 @@ private struct OpenPetsBubbleContentView: View {
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .id("title-\(bubble.title)")
+                        .transition(Self.textTransition)
 
                     if let detail = bubble.detail, !detail.isEmpty {
                         Text(detail)
@@ -2984,8 +3358,12 @@ private struct OpenPetsBubbleContentView: View {
                             .lineLimit(bubble.detailLineLimit)
                             .truncationMode(.tail)
                             .fixedSize(horizontal: false, vertical: false)
+                            .id("detail-\(detail)")
+                            .transition(Self.textTransition)
                     }
                 }
+                .animation(Self.textAnimation, value: bubble.title)
+                .animation(Self.textAnimation, value: bubble.detail)
 
                 Spacer(minLength: 4)
                 if bubble.indicator != .none {
@@ -3005,6 +3383,14 @@ private struct OpenPetsBubbleContentView: View {
                 .stroke(Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.55 : 0.35), lineWidth: 1)
         }
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.22 : 0.08), radius: 4, x: 0, y: 1)
+    }
+
+    private static var textAnimation: Animation {
+        .easeOut(duration: 0.16)
+    }
+
+    private static var textTransition: AnyTransition {
+        .opacity.combined(with: .offset(y: 2))
     }
 
     static func size(for bubble: PetBubble, maxWidth: CGFloat = 260, messageAreaHeight: CGFloat = 84) -> CGSize {

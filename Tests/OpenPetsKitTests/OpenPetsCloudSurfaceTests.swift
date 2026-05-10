@@ -170,6 +170,90 @@ final class OpenPetsCloudSurfaceTests: XCTestCase {
         XCTAssertEqual(OpenPetsHotspotVisibility(distance: 22).compactProgress, 1, accuracy: 0.001)
     }
 
+    func testHotspotVisibilityCanRevealPositionWithoutCursorProximity() {
+        let visibility = OpenPetsHotspotVisibility(distance: .infinity, positionRevealProgress: 0.75)
+
+        XCTAssertEqual(visibility.opacity, 0.75875, accuracy: 0.001)
+        XCTAssertEqual(visibility.compactProgress, 0.75, accuracy: 0.001)
+    }
+
+    func testSurfaceRevealPhaseStartsHoldsAndDissolves() {
+        let start = OpenPetsSurfaceRevealPhase(progress: 0)
+        XCTAssertEqual(start.beamProgress, 0, accuracy: 0.001)
+        XCTAssertEqual(start.beamOpacity, 0, accuracy: 0.001)
+        XCTAssertEqual(start.targetRevealProgress, 0, accuracy: 0.001)
+
+        let hold = OpenPetsSurfaceRevealPhase(progress: 0.5)
+        XCTAssertEqual(hold.beamProgress, 1, accuracy: 0.001)
+        XCTAssertEqual(hold.beamOpacity, 0, accuracy: 0.001)
+        XCTAssertEqual(hold.targetRevealProgress, 1, accuracy: 0.001)
+
+        let lateHold = OpenPetsSurfaceRevealPhase(progress: 0.97)
+        XCTAssertEqual(lateHold.beamOpacity, 0, accuracy: 0.001)
+        XCTAssertEqual(lateHold.targetRevealProgress, 1, accuracy: 0.001)
+
+        let end = OpenPetsSurfaceRevealPhase(progress: 1)
+        XCTAssertEqual(end.beamProgress, 1, accuracy: 0.001)
+        XCTAssertEqual(end.beamOpacity, 0, accuracy: 0.001)
+        XCTAssertEqual(end.targetRevealProgress, 0, accuracy: 0.001)
+    }
+
+    func testSurfaceRevealMakesTargetsReadableWithoutChangingNonTargets() {
+        let phase = OpenPetsSurfaceRevealPhase(progress: 0.5)
+        let targetVisibility = OpenPetsHotspotVisibility(
+            distance: .infinity,
+            positionRevealProgress: phase.targetRevealProgress
+        )
+        let nonTargetVisibility = OpenPetsHotspotVisibility(distance: .infinity)
+
+        XCTAssertEqual(targetVisibility.compactProgress, 1, accuracy: 0.001)
+        XCTAssertEqual(targetVisibility.opacity, 1, accuracy: 0.001)
+        XCTAssertEqual(nonTargetVisibility.compactProgress, 0, accuracy: 0.001)
+        XCTAssertEqual(nonTargetVisibility.opacity, OpenPetsHotspotVisibility.defaultAlpha, accuracy: 0.001)
+    }
+
+    func testSurfaceRevealGeometrySendsBeamFromPetToTargetHotspots() {
+        let petFrame = CGRect(x: 180, y: 180, width: 40, height: 40)
+        let targetFrames = [
+            "battery.badge": CGRect(x: 260, y: 280, width: 80, height: 30),
+            "codex.primary": CGRect(x: 70, y: 285, width: 80, height: 30)
+        ]
+
+        let start = OpenPetsSurfaceRevealGeometry(progress: 0, petFrame: petFrame, targetFrames: targetFrames)
+        XCTAssertEqual(start.origin.x, petFrame.midX, accuracy: 0.001)
+        XCTAssertEqual(start.origin.y, petFrame.midY, accuracy: 0.001)
+        for (surfaceID, target) in start.targetCenters {
+            XCTAssertEqual(start.beamPoint(for: target, surfaceID: surfaceID).x, petFrame.midX, accuracy: 0.001)
+            XCTAssertEqual(start.beamPoint(for: target, surfaceID: surfaceID).y, petFrame.midY, accuracy: 0.001)
+        }
+
+        let arrived = OpenPetsSurfaceRevealGeometry(progress: 0.12, petFrame: petFrame, targetFrames: targetFrames)
+        XCTAssertTrue(arrived.isVisible)
+        for (surfaceID, target) in arrived.targetCenters {
+            XCTAssertEqual(arrived.beamPoint(for: target, surfaceID: surfaceID).x, target.x, accuracy: 0.001)
+            XCTAssertEqual(arrived.beamPoint(for: target, surfaceID: surfaceID).y, target.y, accuracy: 0.001)
+        }
+    }
+
+    func testSurfaceRevealStaggersMultipleTargetStartTimes() {
+        let surfaceIDs: Set<String> = ["battery.badge", "claude.primary", "codex.usage"]
+        let offsets = OpenPetsSurfaceRevealState.startOffsets(for: surfaceIDs)
+
+        XCTAssertEqual(offsets.count, surfaceIDs.count)
+        XCTAssertEqual(Set(offsets.values).count, surfaceIDs.count)
+        XCTAssertEqual(offsets.values.min()!, 0, accuracy: 0.001)
+        XCTAssertEqual(offsets.values.max()!, OpenPetsSurfaceRevealState.maximumStartOffset, accuracy: 0.001)
+
+        let delayedSurfaceID = offsets.max { $0.value < $1.value }!.key
+        let state = OpenPetsSurfaceRevealState(
+            progress: OpenPetsSurfaceRevealState.maximumStartOffset / 2,
+            targetSurfaceIDs: surfaceIDs,
+            startOffsetsBySurfaceID: offsets
+        )
+
+        XCTAssertEqual(state.progress(for: delayedSurfaceID), 0, accuracy: 0.001)
+    }
+
     func testHotspotHitFrameExpandsFromMinimalGlowToVisibleCloud() {
         let widgetFrame = CGRect(
             origin: CGPoint(x: 10, y: 20),
@@ -375,6 +459,60 @@ final class OpenPetsCloudSurfaceTests: XCTestCase {
         XCTAssertNil(selectedSurfaceID)
         XCTAssertTrue(view.selectSurface(atScreenPoint: CGPoint(x: 273, y: 282)))
         XCTAssertEqual(selectedSurfaceID, "battery.badge")
+    }
+
+    @MainActor
+    func testSurfacePanelShowsContextMenuForHotspotWithoutSelectingIt() throws {
+        let view = PetSurfacePanelView()
+        let panel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.contentView = view
+        defer { panel.close() }
+
+        let resolved = OpenPetsSurfacePlacementResolver().resolve([
+            cloudUpdate(surfaceID: "battery.badge", slotPreference: [.hotspotTopTrailing])
+        ])
+        var selectedSurfaceID: String?
+        var contextSurfaceID: String?
+        view.onSelectSurface = { selectedSurfaceID = $0.update.surfaceID }
+        view.onContextMenuSurface = { surface, _ in contextSurfaceID = surface.update.surfaceID }
+
+        view.set(resolvedSurfaces: resolved)
+        view.resizeWindow(aroundPetFrame: CGRect(x: 100, y: 200, width: 100, height: 100))
+
+        XCTAssertTrue(view.showContextMenu(atScreenPoint: CGPoint(x: 273, y: 282)))
+        XCTAssertNil(selectedSurfaceID)
+        XCTAssertEqual(contextSurfaceID, "battery.badge")
+    }
+
+    @MainActor
+    func testSurfacePanelDoesNotShowContextMenuFromPetFrameOrEmptySpace() throws {
+        let view = PetSurfacePanelView()
+        let panel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.contentView = view
+        defer { panel.close() }
+
+        let resolved = OpenPetsSurfacePlacementResolver().resolve([
+            cloudUpdate(surfaceID: "battery.badge", slotPreference: [.hotspotTopTrailing])
+        ])
+        var contextSurfaceID: String?
+        view.onContextMenuSurface = { surface, _ in contextSurfaceID = surface.update.surfaceID }
+
+        view.set(resolvedSurfaces: resolved)
+        view.resizeWindow(aroundPetFrame: CGRect(x: 100, y: 200, width: 100, height: 100))
+
+        XCTAssertFalse(view.showContextMenu(atScreenPoint: CGPoint(x: 139, y: 218)))
+        XCTAssertFalse(view.showContextMenu(atScreenPoint: CGPoint(x: 80, y: 180)))
+        XCTAssertNil(contextSurfaceID)
     }
 
     private func decodeSurfaceUpdate(_ json: String) throws -> OpenPetsSurfaceUpdate {

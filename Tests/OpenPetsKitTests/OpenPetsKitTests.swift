@@ -815,7 +815,10 @@ final class OpenPetsTests: XCTestCase {
                 "large-pet": 1.75
             ],
             enabledPluginIDs: ["openpets.plugin.weather"],
-            disabledPluginIDs: ["openpets.plugin.claude-code"]
+            disabledPluginIDs: ["openpets.plugin.claude-code"],
+            surfaceSlotOverridesByID: [
+                "battery.badge": .hotspotLeft
+            ]
         )
 
         try configuration.save(to: url)
@@ -840,6 +843,7 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(configuration.petScalesByID, [:])
         XCTAssertEqual(configuration.enabledPluginIDs, [])
         XCTAssertEqual(configuration.disabledPluginIDs, [])
+        XCTAssertEqual(configuration.surfaceSlotOverridesByID, [:])
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
     }
 
@@ -867,6 +871,7 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(configuration.petScalesByID, [:])
         XCTAssertEqual(configuration.enabledPluginIDs, [])
         XCTAssertEqual(configuration.disabledPluginIDs, [])
+        XCTAssertEqual(configuration.surfaceSlotOverridesByID, [:])
     }
 
     func testOpenPetsConfigurationResolvesPerPetScaleWithDisplayFallback() {

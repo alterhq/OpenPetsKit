@@ -11,6 +11,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
     public var petScalesByID: [String: CGFloat]
     public var enabledPluginIDs: [String]
     public var disabledPluginIDs: [String]
+    public var surfaceSlotOverridesByID: [String: OpenPetsSurfaceSlot]
 
     public init(
         display: OpenPetsDisplayConfiguration = .default,
@@ -21,7 +22,8 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         activePetID: String = OpenPetsBundledPets.starcornID,
         petScalesByID: [String: CGFloat] = [:],
         enabledPluginIDs: [String] = [],
-        disabledPluginIDs: [String] = []
+        disabledPluginIDs: [String] = [],
+        surfaceSlotOverridesByID: [String: OpenPetsSurfaceSlot] = [:]
     ) {
         self.display = display
         self.socketPath = socketPath
@@ -32,6 +34,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         self.petScalesByID = petScalesByID
         self.enabledPluginIDs = enabledPluginIDs
         self.disabledPluginIDs = disabledPluginIDs
+        self.surfaceSlotOverridesByID = surfaceSlotOverridesByID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -44,6 +47,7 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         case petScalesByID
         case enabledPluginIDs
         case disabledPluginIDs
+        case surfaceSlotOverridesByID
     }
 
     public init(from decoder: Decoder) throws {
@@ -57,6 +61,10 @@ public struct OpenPetsConfiguration: Codable, Equatable, Sendable {
         petScalesByID = try container.decodeIfPresent([String: CGFloat].self, forKey: .petScalesByID) ?? [:]
         enabledPluginIDs = try container.decodeIfPresent([String].self, forKey: .enabledPluginIDs) ?? []
         disabledPluginIDs = try container.decodeIfPresent([String].self, forKey: .disabledPluginIDs) ?? []
+        surfaceSlotOverridesByID = try container.decodeIfPresent(
+            [String: OpenPetsSurfaceSlot].self,
+            forKey: .surfaceSlotOverridesByID
+        ) ?? [:]
     }
 
     public func scale(forPetID petID: String) -> CGFloat {
