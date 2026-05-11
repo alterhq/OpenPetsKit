@@ -1196,6 +1196,7 @@ final class OpenPetsTests: XCTestCase {
             .playAnimation(name: .waving, loop: false, ttlSeconds: 1),
             .stopAnimation,
             .clearMessage(threadId: "11111111-1111-4111-8111-111111111111"),
+            .clearMessages,
             .ping,
             .shutdown
         ]
@@ -1265,6 +1266,13 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(stack.activeCount, 6)
         XCTAssertEqual(stack.visibleMessages().map(\.threadId), ["thread-3", "thread-4", "thread-5", "thread-6"])
         XCTAssertEqual(stack.hiddenMessageCount(), 2)
+
+        stack.clearBubbles()
+
+        XCTAssertEqual(stack.activeCount, 0)
+        XCTAssertEqual(stack.activeMessages, [])
+        XCTAssertEqual(stack.visibleMessages(), [])
+        XCTAssertEqual(stack.hiddenMessageCount(), 0)
     }
 
     func testUnixSocketClientServerFraming() throws {

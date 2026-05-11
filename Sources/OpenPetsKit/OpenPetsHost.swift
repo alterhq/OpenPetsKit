@@ -763,6 +763,8 @@ private final class PetHostController {
             stopAnimation()
         case .clearMessage(let threadId):
             clearBubble(threadId: threadId)
+        case .clearMessages:
+            clearBubbles()
         case .ping, .shutdown:
             break
         }
@@ -957,6 +959,15 @@ private final class PetHostController {
         } else {
             messagePanel.orderOut(nil)
         }
+    }
+
+    private func clearBubbles() {
+        for workItem in messageWorkItems.values {
+            workItem.cancel()
+        }
+        messageWorkItems.removeAll()
+        messageView.clearBubbles()
+        messagePanel.orderOut(nil)
     }
 
     private func cancelMessageWorkItems() {
@@ -1574,6 +1585,11 @@ struct PetMessageStack: Equatable {
     mutating func clearBubble(threadId: String) {
         bubblesByThreadId[threadId] = nil
         orderedThreadIds.removeAll { $0 == threadId }
+    }
+
+    mutating func clearBubbles() {
+        bubblesByThreadId.removeAll()
+        orderedThreadIds.removeAll()
     }
 
     func visibleMessages(limit: Int = visibleLimit) -> [PetMessage] {
@@ -2760,6 +2776,12 @@ final class PetMessagePanelView: NSView {
         if messageStack.activeCount == 0 {
             isMessageStackCollapsed = false
         }
+        relayoutMessages()
+    }
+
+    func clearBubbles() {
+        messageStack.clearBubbles()
+        isMessageStackCollapsed = false
         relayoutMessages()
     }
 

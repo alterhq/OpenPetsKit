@@ -55,6 +55,7 @@ public enum PetCommand: Equatable, Sendable {
     case playAnimation(name: PetAnimation, loop: Bool?, ttlSeconds: Double?)
     case stopAnimation
     case clearMessage(threadId: String)
+    case clearMessages
     case ping
     case shutdown
 }
@@ -74,6 +75,7 @@ extension PetCommand: Codable {
         case playAnimation
         case stopAnimation
         case clearMessage
+        case clearMessages
         case ping
         case shutdown
     }
@@ -95,6 +97,8 @@ extension PetCommand: Codable {
             self = .stopAnimation
         case .clearMessage:
             self = .clearMessage(threadId: try container.decode(String.self, forKey: .threadId))
+        case .clearMessages:
+            self = .clearMessages
         case .ping:
             self = .ping
         case .shutdown:
@@ -119,6 +123,8 @@ extension PetCommand: Codable {
         case .clearMessage(let threadId):
             try container.encode(CommandType.clearMessage, forKey: .type)
             try container.encode(threadId, forKey: .threadId)
+        case .clearMessages:
+            try container.encode(CommandType.clearMessages, forKey: .type)
         case .ping:
             try container.encode(CommandType.ping, forKey: .type)
         case .shutdown:
