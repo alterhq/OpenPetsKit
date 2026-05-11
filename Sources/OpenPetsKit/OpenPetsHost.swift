@@ -549,6 +549,7 @@ private final class PetHostController {
     private var activeReactionAnimation: ResolvedPetReactionAnimation?
     private var surfaceGlobalMouseMonitor: Any?
     private var surfaceLocalMouseMonitor: Any?
+    private var hidesSurfacesDuringPetMovement = false
 
     var petManifest: PetManifest {
         petBundle.manifest
@@ -658,6 +659,7 @@ private final class PetHostController {
             self?.cancelLaunchGlide()
             self?.cancelCallMotion()
             self?.messagePanel.ignoresMouseEvents = true
+            self?.hideSurfacesForPetMovement()
         }
         petView.onDragMove = { [weak self] _ in
             self?.positionMessagePanel()
@@ -672,6 +674,9 @@ private final class PetHostController {
         }
         petView.onInteractionEnd = { [weak self] in
             self?.messagePanel.ignoresMouseEvents = false
+            if self?.glideTimer == nil {
+                self?.showSurfacesAfterPetMovement()
+            }
         }
         messageView.onDismissMessage = { [weak self] threadId in
             self?.clearBubble(threadId: threadId)
@@ -707,10 +712,7 @@ private final class PetHostController {
 
     func show() {
         window.orderFrontRegardless()
-        if surfaceView.hasVisibleSurfaces {
-            positionSurfacePanel()
-            orderSurfacePanelBehindPet()
-        }
+        showSurfacePanelIfNeeded()
         if messageView.hasVisibleMessages {
             positionMessagePanel()
             messagePanel.orderFrontRegardless()
@@ -796,7 +798,7 @@ private final class PetHostController {
     }
 
     func revealSurfacePositions(surfaceIDs: Set<String>?, duration: TimeInterval) {
-        guard surfaceView.hasVisibleSurfaces else { return }
+        guard surfaceView.hasVisibleSurfaces, !hidesSurfacesDuringPetMovement else { return }
 
         surfaceRevealTask?.cancel()
         surfaceView.startSurfaceReveal(targetSurfaceIDs: surfaceIDs)
@@ -826,15 +828,15 @@ private final class PetHostController {
         let resolvedSurfaces = surfaceResolver.resolve(updates)
         self.resolvedSurfaces = resolvedSurfaces
         surfaceView.set(resolvedSurfaces: resolvedSurfaces)
-        if surfaceView.hasVisibleSurfaces {
-            positionSurfacePanel()
-            orderSurfacePanelBehindPet()
-            updateSurfaceCursor()
+        if surfaceView.hasVisibleSurfaces, !hidesSurfacesDuringPetMovement {
+            showSurfacePanelIfNeeded()
         } else {
             surfaceRevealTask?.cancel()
             surfaceRevealTask = nil
             surfaceView.clearSurfaceReveal()
-            surfacePanel.orderOut(nil)
+            if !hidesSurfacesDuringPetMovement {
+                surfacePanel.orderOut(nil)
+            }
         }
         return resolvedSurfaces
     }
@@ -1116,6 +1118,7 @@ private final class PetHostController {
         guard PetLaunchMotion.shouldLaunch(velocity: releaseVelocity) else {
             savePosition()
             resumeAmbientAnimation()
+            showSurfacesAfterPetMovement()
             return
         }
 
@@ -1166,12 +1169,17 @@ private final class PetHostController {
         cancelLaunchGlide()
         savePosition()
         resumeAmbientAnimation()
+        showSurfacesAfterPetMovement()
     }
 
     private func cancelLaunchGlide() {
+        let wasGliding = glideTimer != nil
         glideTimer?.invalidate()
         glideTimer = nil
         lastGlideUpdateTime = nil
+        if wasGliding {
+            showSurfacesAfterPetMovement()
+        }
     }
 
     private func runCallMotion(from origin: CGPoint, to targetOrigin: CGPoint) async {
@@ -1233,14 +1241,33 @@ private final class PetHostController {
     }
 
     private func positionSurfacePanel() {
-        guard surfaceView.hasVisibleSurfaces else { return }
+        guard surfaceView.hasVisibleSurfaces, !hidesSurfacesDuringPetMovement else { return }
         let petFrame = currentPetScreenFrame()
         surfaceView.resizeWindow(aroundPetFrame: petFrame)
         updateSurfaceCursor()
     }
 
+    private func showSurfacePanelIfNeeded() {
+        guard surfaceView.hasVisibleSurfaces, !hidesSurfacesDuringPetMovement else { return }
+        positionSurfacePanel()
+        orderSurfacePanelBehindPet()
+    }
+
     private func orderSurfacePanelBehindPet() {
         surfacePanel.order(.below, relativeTo: window.windowNumber)
+    }
+
+    private func hideSurfacesForPetMovement() {
+        guard !hidesSurfacesDuringPetMovement else { return }
+        hidesSurfacesDuringPetMovement = true
+        surfaceView.setCursorScreenPoint(nil)
+        surfacePanel.orderOut(nil)
+    }
+
+    private func showSurfacesAfterPetMovement() {
+        guard hidesSurfacesDuringPetMovement else { return }
+        hidesSurfacesDuringPetMovement = false
+        showSurfacePanelIfNeeded()
     }
 
     private func installSurfaceMouseTracking() {
@@ -1270,6 +1297,7 @@ private final class PetHostController {
     }
 
     private func handleSurfaceMouseEvent(_ event: NSEvent) {
+        guard !hidesSurfacesDuringPetMovement else { return }
         updateSurfaceCursor(screenPoint: NSEvent.mouseLocation)
         switch event.type {
         case .leftMouseDown:
@@ -1282,7 +1310,7 @@ private final class PetHostController {
     }
 
     private func updateSurfaceCursor(screenPoint: CGPoint = NSEvent.mouseLocation) {
-        guard surfaceView.hasVisibleSurfaces, surfacePanel.isVisible else { return }
+        guard surfaceView.hasVisibleSurfaces, surfacePanel.isVisible, !hidesSurfacesDuringPetMovement else { return }
         surfaceView.setCursorScreenPoint(screenPoint)
     }
 
