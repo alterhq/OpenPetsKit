@@ -492,13 +492,37 @@ final class OpenPetsTests: XCTestCase {
             petFrame: layout.petFrame
         )
 
-        XCTAssertLessThan(layout.containerSize.height, 100)
-        XCTAssertGreaterThanOrEqual(layout.toggleFrame.minY, layout.petFrame.maxY)
+        XCTAssertLessThan(
+            layout.containerSize.height,
+            layout.petFrame.height + abs(OpenPetsMessageLayout.messagePanelVerticalOffset) + OpenPetsMessageLayout.verticalGap
+        )
+        XCTAssertEqual(
+            layout.toggleFrame.minY - layout.petFrame.maxY,
+            OpenPetsMessageLayout.verticalGap + OpenPetsMessageLayout.messagePanelVerticalOffset,
+            accuracy: 0.001
+        )
         XCTAssertGreaterThanOrEqual(layout.toggleFrame.minY, 0)
         XCTAssertLessThanOrEqual(layout.toggleFrame.maxY, layout.containerSize.height)
-        XCTAssertGreaterThanOrEqual(layout.cardFrame.minY, layout.petFrame.maxY)
+        XCTAssertEqual(
+            layout.toggleFrame.maxX - layout.petFrame.maxX,
+            OpenPetsMessageLayout.messagePanelHorizontalOffset,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            layout.cardFrame.minY - layout.petFrame.maxY,
+            OpenPetsMessageLayout.verticalGap
+                + OpenPetsMessageLayout.messagePanelVerticalOffset
+                + OpenPetsMessageLayout.toggleDiameter
+                + OpenPetsMessageLayout.toggleGapBelowCard,
+            accuracy: 0.001
+        )
         XCTAssertGreaterThanOrEqual(layout.cardFrame.minY, 0)
         XCTAssertLessThanOrEqual(layout.cardFrame.maxY, layout.containerSize.height)
+        XCTAssertEqual(
+            layout.cardFrame.maxX - layout.petFrame.maxX,
+            OpenPetsMessageLayout.messagePanelHorizontalOffset,
+            accuracy: 0.001
+        )
         XCTAssertEqual(CGPoint(x: panelOrigin.x + layout.petFrame.minX, y: panelOrigin.y + layout.petFrame.minY), CGPoint(x: 300, y: 400))
     }
 

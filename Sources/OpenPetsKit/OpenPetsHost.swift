@@ -2849,6 +2849,8 @@ struct OpenPetsMessageLayout {
     static let toggleDiameter: CGFloat = 34
     static let messageShadowOutset: CGFloat = 4
     static let verticalGap: CGFloat = 10
+    static let messagePanelHorizontalOffset: CGFloat = 5
+    static let messagePanelVerticalOffset: CGFloat = -10
     static let stackGap: CGFloat = 8
     static let toggleGapBelowCard: CGFloat = 4
     static let sideInset: CGFloat = 12
@@ -3091,10 +3093,10 @@ struct OpenPetsMessageLayout {
         )
 
         var cardFrames: [CGRect] = []
-        var nextY = petFrame.maxY + verticalGap
+        var nextY = petFrame.maxY + verticalGap + messagePanelVerticalOffset
         for cardSize in cardSizes {
             cardFrames.append(CGRect(
-                x: rightEdge - cardSize.width,
+                x: rightEdge + messagePanelHorizontalOffset - cardSize.width,
                 y: nextY,
                 width: cardSize.width,
                 height: cardSize.height
@@ -3103,8 +3105,8 @@ struct OpenPetsMessageLayout {
         }
 
         let toggleFrame = CGRect(
-            x: rightEdge - toggleDiameter,
-            y: petFrame.maxY + verticalGap,
+            x: rightEdge + messagePanelHorizontalOffset - toggleDiameter,
+            y: petFrame.maxY + verticalGap + messagePanelVerticalOffset,
             width: toggleDiameter,
             height: toggleDiameter
         )
