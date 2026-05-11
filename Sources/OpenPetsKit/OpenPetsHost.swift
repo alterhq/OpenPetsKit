@@ -190,8 +190,11 @@ public final class OpenPetsHostSession {
     public let terminatesApplicationOnShutdown: Bool
     private let contextMenuProvider: (@MainActor () -> NSMenu?)?
     private let surfaceContextMenuProvider: OpenPetsSurfaceContextMenuProvider?
+    private let petAssetCache: OpenPetsPetAssetCache
     private var controller: PetHostController?
     private var server: OpenPetsServer?
+    private var surfaceUpdates: [OpenPetsSurfaceUpdate] = []
+    private var petReactionUpdates: [OpenPetsPetReactionUpdate] = []
 
     public var isRunning: Bool {
         controller != nil
@@ -205,20 +208,65 @@ public final class OpenPetsHostSession {
         configuration: OpenPetsHostConfiguration,
         terminatesApplicationOnShutdown: Bool = false,
         contextMenuProvider: (@MainActor () -> NSMenu?)? = nil,
-        surfaceContextMenuProvider: OpenPetsSurfaceContextMenuProvider? = nil
+        surfaceContextMenuProvider: OpenPetsSurfaceContextMenuProvider? = nil,
+        petAssetCache: OpenPetsPetAssetCache = .shared
     ) {
         self.configuration = configuration
         self.terminatesApplicationOnShutdown = terminatesApplicationOnShutdown
         self.contextMenuProvider = contextMenuProvider
         self.surfaceContextMenuProvider = surfaceContextMenuProvider
+        self.petAssetCache = petAssetCache
     }
 
     public func start() throws {
         guard !isRunning else { return }
 
         let petBundle = try PetBundle.load(from: configuration.petDirectoryURL)
+        let petAssets = try PetHostAssets.load(from: petBundle, displayScale: configuration.display.scale)
+        try start(with: petAssets)
+    }
+
+    public func startUsingCachedAssets() async throws {
+        guard !isRunning else { return }
+
+        let petAssets = try await petAssetCache.assets(
+            for: configuration.petDirectoryURL,
+            display: configuration.display
+        )
+        try start(with: petAssets)
+    }
+
+    public func switchPet(to petDirectoryURL: URL, display: OpenPetsDisplayConfiguration) async throws {
+        let petAssets = try await petAssetCache.assets(for: petDirectoryURL, display: display)
+
+        if !isRunning {
+            configuration.petDirectoryURL = petDirectoryURL
+            configuration.display = display
+            try start(with: petAssets)
+            return
+        }
+
+        let oldController = controller
         let controller = try PetHostController(
-            petBundle: petBundle,
+            petAssets: petAssets,
+            display: display,
+            positionStore: PetPositionStore(url: configuration.positionStoreURL),
+            contextMenuProvider: contextMenuProvider,
+            surfaceContextMenuProvider: surfaceContextMenuProvider
+        )
+        configuration.petDirectoryURL = petDirectoryURL
+        configuration.display = display
+        self.controller = controller
+        oldController?.savePosition()
+        oldController?.close()
+        controller.show()
+        _ = controller.setSurfaceUpdates(surfaceUpdates)
+        controller.setPetReactionUpdates(petReactionUpdates)
+    }
+
+    private func start(with petAssets: PetHostAssets) throws {
+        let controller = try PetHostController(
+            petAssets: petAssets,
             display: configuration.display,
             positionStore: PetPositionStore(url: configuration.positionStoreURL),
             contextMenuProvider: contextMenuProvider,
@@ -239,6 +287,8 @@ public final class OpenPetsHostSession {
         self.controller = controller
         self.server = server
         controller.show()
+        _ = controller.setSurfaceUpdates(surfaceUpdates)
+        controller.setPetReactionUpdates(petReactionUpdates)
     }
 
     public func stop() {
@@ -255,7 +305,8 @@ public final class OpenPetsHostSession {
 
     @discardableResult
     public func setSurfaceUpdates(_ updates: [OpenPetsSurfaceUpdate]) -> [OpenPetsResolvedSurface] {
-        controller?.setSurfaceUpdates(updates) ?? OpenPetsSurfacePlacementResolver().resolve(updates)
+        surfaceUpdates = updates
+        return controller?.setSurfaceUpdates(updates) ?? OpenPetsSurfacePlacementResolver().resolve(updates)
     }
 
     public func clearSurfaceUpdates() {
@@ -272,6 +323,7 @@ public final class OpenPetsHostSession {
     }
 
     public func setPetReactionUpdates(_ updates: [OpenPetsPetReactionUpdate]) {
+        petReactionUpdates = updates
         controller?.setPetReactionUpdates(updates)
     }
 
@@ -556,21 +608,21 @@ private final class PetHostController {
     }
 
     init(
-        petBundle: PetBundle,
+        petAssets: PetHostAssets,
         display: OpenPetsDisplayConfiguration,
         positionStore: PetPositionStore,
         contextMenuProvider: (@MainActor () -> NSMenu?)? = nil,
         surfaceContextMenuProvider: OpenPetsSurfaceContextMenuProvider? = nil
     ) throws {
+        let petBundle = petAssets.petBundle
         self.petBundle = petBundle
         self.positionStore = positionStore
         messageAreaHeight = max(display.messageAreaHeight, 108)
 
-        let frames = try PetHostController.loadFrames(from: petBundle)
-        surfacePalette = OpenPetsPetSurfacePalette.extract(from: frames)
-        let reactionAssets = try PetHostController.loadReactionFrames(from: petBundle)
-        reactionFrames = reactionAssets.frames
-        reactionFrameDurations = reactionAssets.durations
+        let frames = petAssets.frames
+        surfacePalette = petAssets.surfacePalette
+        reactionFrames = petAssets.reactionFrames
+        reactionFrameDurations = petAssets.reactionFrameDurations
         spriteSize = CGSize(
             width: CGFloat(petBundle.atlas.cellWidth) * display.scale,
             height: CGFloat(petBundle.atlas.cellHeight) * display.scale
@@ -579,10 +631,7 @@ private final class PetHostController {
             spriteSize: spriteSize,
             messageAreaHeight: messageAreaHeight
         )
-        stableSpriteBounds = PetSpriteVisibility.stableVisibleBounds(
-            in: frames,
-            spriteSize: spriteSize
-        )
+        stableSpriteBounds = petAssets.stableSpriteBounds
         petView = PetHostView(
             spriteSize: spriteSize,
             stableSpriteBounds: stableSpriteBounds,
@@ -1473,84 +1522,6 @@ private final class PetHostController {
         )
     }
 
-    private static func loadFrames(from petBundle: PetBundle) throws -> [PetAnimation: [CGImage]] {
-        guard
-            let source = CGImageSourceCreateWithURL(petBundle.spritesheetURL as CFURL, nil),
-            let spritesheet = CGImageSourceCreateImageAtIndex(source, 0, nil)
-        else {
-            throw OpenPetsError.invalidSpritesheet(petBundle.spritesheetURL)
-        }
-
-        var frames: [PetAnimation: [CGImage]] = [:]
-        for animation in PetAnimation.allCases {
-            let row = animation.row
-            frames[animation] = (0..<animation.frameCount).compactMap { column in
-                let rect = CGRect(
-                    x: column * petBundle.atlas.cellWidth,
-                    y: row * petBundle.atlas.cellHeight,
-                    width: petBundle.atlas.cellWidth,
-                    height: petBundle.atlas.cellHeight
-                )
-                return spritesheet.cropping(to: rect)
-            }
-        }
-
-        return frames
-    }
-
-    private static func loadReactionFrames(
-        from petBundle: PetBundle
-    ) throws -> (frames: [OpenPetsPetReactionKind: [CGImage]], durations: [OpenPetsPetReactionKind: [Int]]) {
-        var framesByReaction: [OpenPetsPetReactionKind: [CGImage]] = [:]
-        var durationsByReaction: [OpenPetsPetReactionKind: [Int]] = [:]
-
-        for reaction in petBundle.manifest.reactionAnimations {
-            guard
-                let spritesheetPath = reaction.spritesheetPath,
-                let row = reaction.row,
-                let frameCount = reaction.frameCount,
-                frameCount > 0
-            else {
-                continue
-            }
-
-            let spritesheetURL = petBundle.directoryURL.appendingPathComponent(spritesheetPath)
-            guard
-                let source = CGImageSourceCreateWithURL(spritesheetURL as CFURL, nil),
-                let spritesheet = CGImageSourceCreateImageAtIndex(source, 0, nil)
-            else {
-                continue
-            }
-
-            guard
-                spritesheet.width % petBundle.atlas.cellWidth == 0,
-                spritesheet.height % petBundle.atlas.cellHeight == 0,
-                row >= 0,
-                (row + 1) * petBundle.atlas.cellHeight <= spritesheet.height,
-                frameCount * petBundle.atlas.cellWidth <= spritesheet.width
-            else {
-                continue
-            }
-
-            let images = (0..<frameCount).compactMap { column in
-                spritesheet.cropping(to: CGRect(
-                    x: column * petBundle.atlas.cellWidth,
-                    y: row * petBundle.atlas.cellHeight,
-                    width: petBundle.atlas.cellWidth,
-                    height: petBundle.atlas.cellHeight
-                ))
-            }
-            guard !images.isEmpty else { continue }
-            framesByReaction[reaction.kind] = images
-            if let durations = reaction.frameDurationsMilliseconds, !durations.isEmpty {
-                durationsByReaction[reaction.kind] = durations
-            } else {
-                durationsByReaction[reaction.kind] = Array(repeating: 150, count: images.count)
-            }
-        }
-
-        return (framesByReaction, durationsByReaction)
-    }
 }
 
 struct PetMessage: Equatable, Identifiable {

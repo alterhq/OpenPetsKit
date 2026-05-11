@@ -48,12 +48,7 @@ public struct PetBundle: Sendable {
     }
 
     public static func load(from directoryURL: URL) throws -> PetBundle {
-        let manifestURL = directoryURL.appendingPathComponent("pet.json")
-        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
-            throw OpenPetsError.missingManifest(manifestURL)
-        }
-
-        let manifest = try JSONDecoder().decode(PetManifest.self, from: Data(contentsOf: manifestURL))
+        let manifest = try loadManifest(from: directoryURL)
         let spritesheetURL = directoryURL.appendingPathComponent(manifest.spritesheetPath)
         guard FileManager.default.fileExists(atPath: spritesheetURL.path) else {
             throw OpenPetsError.missingSpritesheet(spritesheetURL)
@@ -66,6 +61,15 @@ public struct PetBundle: Sendable {
             spritesheetURL: spritesheetURL,
             atlas: atlas
         )
+    }
+
+    public static func loadManifest(from directoryURL: URL) throws -> PetManifest {
+        let manifestURL = directoryURL.appendingPathComponent("pet.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+            throw OpenPetsError.missingManifest(manifestURL)
+        }
+
+        return try JSONDecoder().decode(PetManifest.self, from: Data(contentsOf: manifestURL))
     }
 
     private static func readAtlas(from spritesheetURL: URL) throws -> PetAtlas {

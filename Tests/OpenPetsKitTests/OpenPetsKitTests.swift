@@ -988,6 +988,41 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(image.size, CGSize(width: 96, height: 104))
     }
 
+    func testPetAssetCachePreloadsMultiplePets() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let firstPetURL = root.appendingPathComponent("first", isDirectory: true)
+        let secondPetURL = root.appendingPathComponent("second", isDirectory: true)
+        try makePetBundle(id: "first", at: firstPetURL)
+        try makePetBundle(id: "second", at: secondPetURL)
+
+        let cache = OpenPetsPetAssetCache()
+        await cache.preloadPets([
+            OpenPetsPetAssetPreloadRequest(petDirectoryURL: firstPetURL, display: .default),
+            OpenPetsPetAssetPreloadRequest(petDirectoryURL: secondPetURL, display: .default)
+        ])
+
+        let cachedPetCount = await cache.cachedPetCount()
+        XCTAssertEqual(cachedPetCount, 2)
+    }
+
+    func testPetAssetCacheRebuildsChangedSpritesheetWithoutGrowingCache() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try makePetBundle(id: "changing-pet", at: directory)
+
+        let cache = OpenPetsPetAssetCache()
+        let firstAssets = try await cache.assets(for: directory, display: .default)
+        try writePNG(width: 768, height: 936, to: directory.appendingPathComponent("spritesheet.png"))
+        let secondAssets = try await cache.assets(for: directory, display: .default)
+
+        XCTAssertFalse(firstAssets === secondAssets)
+        XCTAssertEqual(secondAssets.petBundle.atlas.cellWidth, 96)
+        XCTAssertEqual(secondAssets.petBundle.atlas.cellHeight, 104)
+        let cachedPetCount = await cache.cachedPetCount()
+        XCTAssertEqual(cachedPetCount, 1)
+    }
+
     func testPetLibraryDiscoversInstalledAndKnownUserPetDirectories() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

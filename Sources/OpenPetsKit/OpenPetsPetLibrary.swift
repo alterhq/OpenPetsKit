@@ -62,12 +62,15 @@ public struct OpenPetsPetLibrary: Sendable {
         var seenPetIDs = Set([OpenPetsBundledPets.starcornID])
 
         for bundleURL in petBundleURLs(in: installedPetsDirectory) {
-            guard let bundle = try? PetBundle.load(from: bundleURL), seenPetIDs.insert(bundle.manifest.id).inserted else {
+            guard
+                let manifest = loadDiscoverableManifest(from: bundleURL),
+                seenPetIDs.insert(manifest.id).inserted
+            else {
                 continue
             }
             pets.append(OpenPetsPetReference(
-                id: bundle.manifest.id,
-                displayName: bundle.manifest.displayName,
+                id: manifest.id,
+                displayName: manifest.displayName,
                 directoryURL: bundleURL,
                 location: .installed
             ))
@@ -75,12 +78,15 @@ public struct OpenPetsPetLibrary: Sendable {
 
         for directory in discoveredPetsDirectories {
             for bundleURL in petBundleURLs(in: directory) {
-                guard let bundle = try? PetBundle.load(from: bundleURL), seenPetIDs.insert(bundle.manifest.id).inserted else {
+                guard
+                    let manifest = loadDiscoverableManifest(from: bundleURL),
+                    seenPetIDs.insert(manifest.id).inserted
+                else {
                     continue
                 }
                 pets.append(OpenPetsPetReference(
-                    id: bundle.manifest.id,
-                    displayName: bundle.manifest.displayName,
+                    id: manifest.id,
+                    displayName: manifest.displayName,
                     directoryURL: bundleURL,
                     location: .installed
                 ))
@@ -97,13 +103,24 @@ public struct OpenPetsPetLibrary: Sendable {
     private func petBundleURL(for id: String, in directories: [URL]) -> URL? {
         for directory in directories {
             for bundleURL in petBundleURLs(in: directory) {
-                guard let bundle = try? PetBundle.load(from: bundleURL), bundle.manifest.id == id else {
+                guard let manifest = loadDiscoverableManifest(from: bundleURL), manifest.id == id else {
                     continue
                 }
                 return bundleURL
             }
         }
         return nil
+    }
+
+    private func loadDiscoverableManifest(from bundleURL: URL) -> PetManifest? {
+        guard let manifest = try? PetBundle.loadManifest(from: bundleURL) else {
+            return nil
+        }
+        let spritesheetURL = bundleURL.appendingPathComponent(manifest.spritesheetPath)
+        guard FileManager.default.fileExists(atPath: spritesheetURL.path) else {
+            return nil
+        }
+        return manifest
     }
 
     private func petBundleURLs(in directory: URL) -> [URL] {
