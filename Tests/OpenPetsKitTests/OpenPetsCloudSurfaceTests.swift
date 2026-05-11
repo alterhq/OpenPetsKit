@@ -119,6 +119,23 @@ final class OpenPetsCloudSurfaceTests: XCTestCase {
         XCTAssertEqual(resolved.first?.placement, .placed(.hotspotTopTrailing))
     }
 
+    func testPlacementResolverAssignsAllDefaultSlotsBeforeHidingOverflow() {
+        let resolver = OpenPetsSurfacePlacementResolver()
+        let defaultSlots = OpenPetsSurfaceSlots.defaultOrder
+        let updates = (0...defaultSlots.count).map { index in
+            cloudUpdate(surfaceID: "surface.\(index)")
+        }
+
+        let resolved = resolver.resolve(updates)
+
+        XCTAssertEqual(defaultSlots.count, 8)
+        XCTAssertEqual(
+            resolved.prefix(defaultSlots.count).map(\.placement),
+            defaultSlots.map { .placed($0) }
+        )
+        XCTAssertEqual(resolved.last?.placement, .hidden(reason: "No compatible slot available"))
+    }
+
     func testPlacementResolverRejectsDuplicateSurfaceIDsWithoutOccupyingSlots() {
         let resolver = OpenPetsSurfacePlacementResolver()
         let duplicateA = cloudUpdate(surfaceID: "claude.5h", priority: 90)
@@ -295,6 +312,27 @@ final class OpenPetsCloudSurfaceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(frame.minY, 0)
         XCTAssertLessThanOrEqual(frame.maxX, 220)
         XCTAssertLessThanOrEqual(frame.maxY, 220)
+    }
+
+    func testHotspotLayoutPlacesBelowSlotsUnderPet() {
+        let petFrame = CGRect(x: 200, y: 200, width: 100, height: 100)
+        let panelSize = CGSize(width: 700, height: 700)
+
+        let leadingFrame = OpenPetsSurfaceHotspotLayout.frame(
+            for: .hotspotBelowLeading,
+            petFrame: petFrame,
+            panelSize: panelSize
+        )
+        let trailingFrame = OpenPetsSurfaceHotspotLayout.frame(
+            for: .hotspotBelowTrailing,
+            petFrame: petFrame,
+            panelSize: panelSize
+        )
+
+        XCTAssertGreaterThan(leadingFrame.minY, petFrame.maxY)
+        XCTAssertGreaterThan(trailingFrame.minY, petFrame.maxY)
+        XCTAssertLessThanOrEqual(leadingFrame.maxX, petFrame.midX)
+        XCTAssertGreaterThanOrEqual(trailingFrame.minX, petFrame.midX)
     }
 
     func testHotspotDistanceIsLocalToWidgetCenterNotWholePetFrame() {

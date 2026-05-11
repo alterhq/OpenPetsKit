@@ -2124,6 +2124,7 @@ enum OpenPetsSurfaceHotspotLayout {
     static let revealedHitSize = CGSize(width: 72, height: 26)
     static let minimalHitSize = CGSize(width: 14, height: 14)
     private static let sideGap: CGFloat = 73
+    private static let belowGap: CGFloat = 18
 
     static func frame(for slot: OpenPetsSurfaceSlot?, petFrame: CGRect, panelSize: CGSize) -> CGRect {
         let center: CGPoint
@@ -2140,6 +2141,16 @@ enum OpenPetsSurfaceHotspotLayout {
             center = CGPoint(x: petFrame.minX - sideGap, y: petFrame.maxY - 18)
         case .some(.hotspotLeft):
             center = CGPoint(x: petFrame.minX - sideGap, y: petFrame.midY)
+        case .some(.hotspotBelowLeading):
+            center = CGPoint(
+                x: petFrame.midX - widgetSize.width / 2,
+                y: petFrame.maxY + belowGap + widgetSize.height / 2
+            )
+        case .some(.hotspotBelowTrailing):
+            center = CGPoint(
+                x: petFrame.midX + widgetSize.width / 2,
+                y: petFrame.maxY + belowGap + widgetSize.height / 2
+            )
         case .some:
             center = CGPoint(x: petFrame.maxX + sideGap, y: petFrame.minY + 18)
         }

@@ -67,6 +67,8 @@ public struct OpenPetsSurfaceSlot: RawRepresentable, Codable, Hashable, Sendable
     public static let hotspotBottomTrailing: Self = "hotspot.bottomTrailing"
     public static let hotspotBottomLeading: Self = "hotspot.bottomLeading"
     public static let hotspotLeft: Self = "hotspot.left"
+    public static let hotspotBelowLeading: Self = "hotspot.belowLeading"
+    public static let hotspotBelowTrailing: Self = "hotspot.belowTrailing"
 }
 
 public enum OpenPetsSurfaceSlots {
@@ -76,7 +78,9 @@ public enum OpenPetsSurfaceSlots {
         .hotspotRight,
         .hotspotBottomTrailing,
         .hotspotBottomLeading,
-        .hotspotLeft
+        .hotspotLeft,
+        .hotspotBelowLeading,
+        .hotspotBelowTrailing
     ]
 }
 
