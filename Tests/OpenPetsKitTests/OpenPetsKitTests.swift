@@ -800,6 +800,148 @@ final class OpenPetsTests: XCTestCase {
         XCTAssertEqual(dismissedThreadIds, ["thread-1"])
     }
 
+    @MainActor
+    func testClosedMessagePanelSurfacesNewBubblesTemporarily() async throws {
+        let petSize = CGSize(width: 112, height: 126)
+        let messageAreaHeight: CGFloat = 108
+        let firstBubble = PetBubble(title: "One", detail: nil, indicator: .none)
+        let secondBubble = PetBubble(title: "Two", detail: nil, indicator: .working)
+        let view = PetMessagePanelView(
+            petSize: petSize,
+            messageAreaHeight: messageAreaHeight,
+            closedModeRevealDurationNanoseconds: 20_000_000
+        )
+        view.setBubble(firstBubble, threadId: "thread-1")
+
+        let layout = OpenPetsMessageLayout.makeMessagePanel(
+            messages: [PetMessage(threadId: "thread-1", bubble: firstBubble)],
+            hiddenMessageCount: 0,
+            petSize: petSize,
+            messageAreaHeight: messageAreaHeight
+        )
+        let window = NSWindow(
+            contentRect: CGRect(origin: .zero, size: view.bounds.size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        let point = CGPoint(x: layout.toggleFrame.midX, y: layout.toggleFrame.midY)
+        let mouseDown = try XCTUnwrap(mouseEvent(type: .leftMouseDown, location: point, window: window))
+        let mouseUp = try XCTUnwrap(mouseEvent(type: .leftMouseUp, location: point, window: window))
+
+        view.mouseDown(with: mouseDown)
+        view.mouseUp(with: mouseUp)
+
+        XCTAssertTrue(view.isEffectivelyCollapsedForTesting)
+
+        view.setBubble(secondBubble, threadId: "thread-2")
+
+        XCTAssertFalse(view.isEffectivelyCollapsedForTesting)
+        XCTAssertTrue(view.isSurfacingClosedModeMessagesForTesting)
+
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertTrue(view.isEffectivelyCollapsedForTesting)
+        XCTAssertFalse(view.isSurfacingClosedModeMessagesForTesting)
+    }
+
+    @MainActor
+    func testClosedMessagePanelSurfacesUpdatedThreadTemporarily() async throws {
+        let petSize = CGSize(width: 112, height: 126)
+        let messageAreaHeight: CGFloat = 108
+        let firstBubble = PetBubble(title: "One", detail: nil, indicator: .none)
+        let updatedBubble = PetBubble(title: "One updated", detail: "Still running", indicator: .working)
+        let view = PetMessagePanelView(
+            petSize: petSize,
+            messageAreaHeight: messageAreaHeight,
+            closedModeRevealDurationNanoseconds: 20_000_000
+        )
+        view.setBubble(firstBubble, threadId: "thread-1")
+
+        let layout = OpenPetsMessageLayout.makeMessagePanel(
+            messages: [PetMessage(threadId: "thread-1", bubble: firstBubble)],
+            hiddenMessageCount: 0,
+            petSize: petSize,
+            messageAreaHeight: messageAreaHeight
+        )
+        let window = NSWindow(
+            contentRect: CGRect(origin: .zero, size: view.bounds.size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        let point = CGPoint(x: layout.toggleFrame.midX, y: layout.toggleFrame.midY)
+        let mouseDown = try XCTUnwrap(mouseEvent(type: .leftMouseDown, location: point, window: window))
+        let mouseUp = try XCTUnwrap(mouseEvent(type: .leftMouseUp, location: point, window: window))
+
+        view.mouseDown(with: mouseDown)
+        view.mouseUp(with: mouseUp)
+
+        XCTAssertTrue(view.isEffectivelyCollapsedForTesting)
+
+        view.setBubble(updatedBubble, threadId: "thread-1")
+
+        XCTAssertFalse(view.isEffectivelyCollapsedForTesting)
+        XCTAssertTrue(view.isSurfacingClosedModeMessagesForTesting)
+
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertTrue(view.isEffectivelyCollapsedForTesting)
+        XCTAssertFalse(view.isSurfacingClosedModeMessagesForTesting)
+    }
+
+    @MainActor
+    func testClosedMessagePanelRefreshesTemporaryRevealForLaterBubbles() async throws {
+        let petSize = CGSize(width: 112, height: 126)
+        let messageAreaHeight: CGFloat = 108
+        let firstBubble = PetBubble(title: "One", detail: nil, indicator: .none)
+        let secondBubble = PetBubble(title: "Two", detail: nil, indicator: .working)
+        let thirdBubble = PetBubble(title: "Three", detail: nil, indicator: .success)
+        let view = PetMessagePanelView(
+            petSize: petSize,
+            messageAreaHeight: messageAreaHeight,
+            closedModeRevealDurationNanoseconds: 200_000_000
+        )
+        view.setBubble(firstBubble, threadId: "thread-1")
+
+        let layout = OpenPetsMessageLayout.makeMessagePanel(
+            messages: [PetMessage(threadId: "thread-1", bubble: firstBubble)],
+            hiddenMessageCount: 0,
+            petSize: petSize,
+            messageAreaHeight: messageAreaHeight
+        )
+        let window = NSWindow(
+            contentRect: CGRect(origin: .zero, size: view.bounds.size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        let point = CGPoint(x: layout.toggleFrame.midX, y: layout.toggleFrame.midY)
+        let mouseDown = try XCTUnwrap(mouseEvent(type: .leftMouseDown, location: point, window: window))
+        let mouseUp = try XCTUnwrap(mouseEvent(type: .leftMouseUp, location: point, window: window))
+
+        view.mouseDown(with: mouseDown)
+        view.mouseUp(with: mouseUp)
+        view.setBubble(secondBubble, threadId: "thread-2")
+
+        try await Task.sleep(nanoseconds: 120_000_000)
+
+        view.setBubble(thirdBubble, threadId: "thread-3")
+
+        try await Task.sleep(nanoseconds: 120_000_000)
+
+        XCTAssertFalse(view.isEffectivelyCollapsedForTesting)
+        XCTAssertTrue(view.isSurfacingClosedModeMessagesForTesting)
+
+        try await Task.sleep(nanoseconds: 160_000_000)
+
+        XCTAssertTrue(view.isEffectivelyCollapsedForTesting)
+        XCTAssertFalse(view.isSurfacingClosedModeMessagesForTesting)
+    }
+
     func testMessageStatusDoesNotUseProgressIndicator() {
         XCTAssertEqual(openPetsBubbleIndicator(forStatusKind: "message"), .none)
         XCTAssertEqual(openPetsBubbleIndicator(forStatusKind: "reply"), .none)

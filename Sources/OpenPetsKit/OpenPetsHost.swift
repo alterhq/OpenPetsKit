@@ -2665,10 +2665,22 @@ final class PetMessagePanelView: NSView {
     }()
     private let petSize: CGSize
     private let messageAreaHeight: CGFloat
+    private let closedModeRevealDurationNanoseconds: UInt64
     private var messageStack = PetMessageStack()
     private var isMessageStackCollapsed = false
+    private var isSurfacingClosedModeMessages = false
+    private var closedModeRevealTask: Task<Void, Never>?
+    private var closedModeRevealGeneration = 0
     private var currentMessageLayout = OpenPetsMessageLayout.empty
     private var mouseDownMessageTarget: MessageMouseTarget?
+
+    var isEffectivelyCollapsedForTesting: Bool {
+        isEffectivelyCollapsed
+    }
+
+    var isSurfacingClosedModeMessagesForTesting: Bool {
+        isSurfacingClosedModeMessages
+    }
 
     private enum MessageMouseTarget: Equatable {
         case toggle
@@ -2676,9 +2688,14 @@ final class PetMessagePanelView: NSView {
         case action(String, PetBubbleAction)
     }
 
-    init(petSize: CGSize, messageAreaHeight: CGFloat) {
+    init(
+        petSize: CGSize,
+        messageAreaHeight: CGFloat,
+        closedModeRevealDurationNanoseconds: UInt64 = 5_000_000_000
+    ) {
         self.petSize = petSize
         self.messageAreaHeight = messageAreaHeight
+        self.closedModeRevealDurationNanoseconds = closedModeRevealDurationNanoseconds
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
@@ -2738,14 +2755,20 @@ final class PetMessagePanelView: NSView {
     }
 
     func setBubble(_ bubble: PetBubble, threadId: String) {
+        let shouldSurfaceInClosedMode = isMessageStackCollapsed
         messageStack.setBubble(bubble, threadId: threadId)
-        relayoutMessages()
+        if shouldSurfaceInClosedMode {
+            surfaceClosedModeMessagesTemporarily()
+        } else {
+            relayoutMessages()
+        }
     }
 
     func clearBubble(threadId: String) {
         messageStack.clearBubble(threadId: threadId)
         if messageStack.activeCount == 0 {
             isMessageStackCollapsed = false
+            cancelClosedModeReveal()
         }
         relayoutMessages()
     }
@@ -2753,6 +2776,7 @@ final class PetMessagePanelView: NSView {
     func clearBubbles() {
         messageStack.clearBubbles()
         isMessageStackCollapsed = false
+        cancelClosedModeReveal()
         relayoutMessages()
     }
 
@@ -2765,6 +2789,10 @@ final class PetMessagePanelView: NSView {
         )
         frame.size = currentMessageLayout.containerSize
         window.setFrame(frame, display: false)
+    }
+
+    private var isEffectivelyCollapsed: Bool {
+        isMessageStackCollapsed && !isSurfacingClosedModeMessages
     }
 
     private func relayoutMessages() {
@@ -2783,7 +2811,7 @@ final class PetMessagePanelView: NSView {
         currentMessageLayout = OpenPetsMessageLayout.makeMessagePanel(
             messages: messages,
             hiddenMessageCount: messageStack.hiddenMessageCount(),
-            isCollapsed: isMessageStackCollapsed,
+            isCollapsed: isEffectivelyCollapsed,
             petSize: petSize,
             messageAreaHeight: messageAreaHeight
         )
@@ -2806,7 +2834,7 @@ final class PetMessagePanelView: NSView {
         bubbleView.rootView = OpenPetsMessageView(
             messages: messages,
             hiddenMessageCount: hiddenMessageCount,
-            isCollapsed: isMessageStackCollapsed,
+            isCollapsed: isEffectivelyCollapsed,
             activeMessageCount: messageStack.activeCount,
             layout: layout,
             cardFrames: layout.cardFrames,
@@ -2861,8 +2889,47 @@ final class PetMessagePanelView: NSView {
 
     private func toggleMessageStackCollapsed() {
         guard messageStack.activeCount > 0 else { return }
-        isMessageStackCollapsed.toggle()
+        if isEffectivelyCollapsed {
+            isMessageStackCollapsed = false
+        } else {
+            isMessageStackCollapsed = true
+        }
+        cancelClosedModeReveal()
         relayoutMessages()
+    }
+
+    private func surfaceClosedModeMessagesTemporarily() {
+        closedModeRevealTask?.cancel()
+        closedModeRevealGeneration += 1
+        isSurfacingClosedModeMessages = true
+        relayoutMessages()
+
+        let generation = closedModeRevealGeneration
+        let durationNanoseconds = closedModeRevealDurationNanoseconds
+        closedModeRevealTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: durationNanoseconds)
+            } catch {
+                return
+            }
+            guard
+                let self,
+                self.isMessageStackCollapsed,
+                self.closedModeRevealGeneration == generation
+            else {
+                return
+            }
+            self.isSurfacingClosedModeMessages = false
+            self.closedModeRevealTask = nil
+            self.relayoutMessages()
+        }
+    }
+
+    private func cancelClosedModeReveal() {
+        closedModeRevealTask?.cancel()
+        closedModeRevealTask = nil
+        closedModeRevealGeneration += 1
+        isSurfacingClosedModeMessages = false
     }
 }
 
